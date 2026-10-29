@@ -1,4 +1,5 @@
 const U = require('../lib/utils');
+const { sans, C } = require('../lib/deco');
 const state = require('../lib/state');
 const db = require('../lib/db');
 
@@ -18,6 +19,29 @@ const startQA = (c, { question, answers, show, reward = 50, seconds = 30 }) => {
   state.games.set(c.from, { type: 'qa', answers: answers.map(norm), show, reward, expires: Date.now() + seconds * 1000 });
   return c.reply(`${question}\n\n💬 Responde con: *${c.prefix}resp <respuesta>*  (${seconds} s • 🪙 +${reward})`);
 };
+
+async function sendGameButtons(c, text, buttons) {
+  const pfx = c.prefix || '.';
+  const btns = buttons.slice(0, 3).map((b) => ({
+    buttonId: b.id.startsWith(pfx) ? b.id : (pfx + b.id),
+    buttonText: { displayText: String(b.text).slice(0, 20) },
+    type: 1,
+  }));
+  try {
+    await c.sock.sendMessage(c.from, {
+      text,
+      footer: 'SHARKNEX · Juegos',
+      buttons: btns,
+      headerType: 1,
+    }, { quoted: c.m });
+  } catch {
+    const alt = buttons.map((b) => '• ' + (b.id.startsWith(pfx) ? b.id : pfx + b.id) + ' — ' + b.text).join('\n');
+    await c.reply(text + '\n\n' + alt);
+  }
+}
+
+
+/** Botones URL que abren pantalla real (navegador / WebView de WhatsApp) */
 
 const list = [
   mk('mate', 'Reto de matemáticas fácil', '', (c) => {
@@ -124,6 +148,14 @@ const list = [
     }
     c.reply(`${HANG[6 - g.lives]} ${shown}\n\nLetras: ${[...g.guessed].join(', ')}\nVidas: ${'❤️'.repeat(g.lives)}`);
   }),
+
+
+
+
+
+
+
+
 
   mk('rendirse', 'Termina el juego activo del chat', '', (c) => {
     const g = state.games.get(c.from);

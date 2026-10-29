@@ -2,6 +2,7 @@ const subbots = require('../lib/subbots');
 const decor = require('../lib/decor');
 const db = require('../lib/db');
 const config = require('../config');
+const { sans, C } = require('../lib/deco');
 const U = require('../lib/utils');
 const fs = require('fs');
 const path = require('path');
@@ -32,28 +33,51 @@ module.exports = [
     await c.sock.sendMessage(dest, { text: code }); // solo el codigo, facil de copiar
   }, ['subbot', 'serbot', 'jadibot', 'vincular']),
 
-  mk('bots', 'Bots vinculados: el principal y los sub bots (estado, mensajes y comandos)', '', (c) => {
+    mk('bots', 'Bots vinculados: el principal y los sub bots (estado, mensajes y comandos)', '', (c) => {
     const st = require('../lib/state');
     const l = subbots.list();
     const main = st.mainSock?.user ? subbots.num(st.mainSock.user.id) : subbots.num(config.owner.number);
+    const mainOnline = !!st.mainSock?.user;
     const mainUp = U.fmtTime((Date.now() - st.startTime) / 1000);
-    const up = (s) => (s.status === 'online' && s.since ? U.fmtTime((Date.now() - s.since) / 1000) : s.status);
+    const up = (s) => (s.status === 'online' && s.since ? U.fmtTime((Date.now() - s.since) / 1000) : '—');
+    const icon = (online) => (online ? '● ONLINE' : '○ OFF');
+    const onlineN = l.filter((s) => s.status === 'online').length;
     const lines = [
-      `Bots vinculados: ${l.length + 1}`,
+      '   ❀ 𓆩 ' + sans('bots') + ' 𓆪 ❀',
       '',
-      `Principal: +${main}`,
-      `  estado: ${st.mainSock?.user ? 'en linea' : 'conectando'} (${mainUp})`,
+      '  ✦ Total      ── ' + (l.length + 1) + ' bots',
+      '  ✦ Sub bots   ── ' + l.length + ' / ' + subbots.max(),
+      '  ✦ En linea   ── ' + (onlineN + (mainOnline ? 1 : 0)),
       '',
-      `Sub bots (${l.length}/${subbots.max()}):`,
-      ...(l.length ? l.flatMap((s, i) => [
-        `${i + 1}. +${s.num} - ${s.status === 'online' ? 'en linea' : s.status}`,
-        `   activo: ${up(s)} | mensajes: ${s.rx} | comandos: ${s.cmd}`,
-        ...(c.isOwner && s.err ? [`   ultimo error: ${s.err}`] : []),
-      ]) : ['(ninguno todavia)']),
+      '  ➩ ' + sans('principal'),
+      '  ✦ Numero     ── +' + main,
+      '  ✦ Estado     ── ' + icon(mainOnline),
+      '  ✦ Activo     ── ' + mainUp,
       '',
-      ...(c.isGroup && db.data.chats[c.from]?.primary ? [`Primario de este grupo: +${db.data.chats[c.from].primary}`, ''] : []),
-      `Vincula el tuyo con ${c.prefix}code`,
+      '  ➩ ' + sans('sub bots'),
     ];
+    if (!l.length) {
+      lines.push('  (ninguno vinculado)');
+    } else {
+      l.forEach((s, i) => {
+        const on = s.status === 'online';
+        lines.push('');
+        lines.push('  ' + (i + 1) + '. +' + s.num);
+        lines.push('     Estado   ── ' + icon(on));
+        lines.push('     Activo   ── ' + up(s));
+        lines.push('     Msgs     ── ' + (s.rx || 0));
+        lines.push('     Cmds     ── ' + (s.cmd || 0));
+        if (c.isOwner && s.err) lines.push('     Error    ── ' + String(s.err).slice(0, 40));
+      });
+    }
+    if (c.isGroup && db.data.chats[c.from]?.primary) {
+      lines.push('');
+      lines.push('  ✦ Primario grupo ── +' + db.data.chats[c.from].primary);
+    }
+    lines.push('');
+    lines.push('  ➩ Vincula: ' + (c.prefix || '.') + 'code');
+    lines.push('  ➩ Quitar:  ' + (c.prefix || '.') + 'delsubbot <num>');
+    lines.push('   ❀');
     c.reply(lines.join('\n'));
   }, ['subbots', 'listbots', 'botslist']),
 

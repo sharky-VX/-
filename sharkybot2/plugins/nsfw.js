@@ -142,7 +142,7 @@ async function searchXnxx(query, limit) {
   const links = [];
   try {
     const rows = await yt.search('xnxx:' + query, limit).catch(() => []);
-    for (const r of rows || []) if (r.url) links.push({ title: (r.title || 'video').slice(0, 60), url: r.url });
+    for (const r of rows || []) if (r.url) links.push({ title: (r.title || 'video').slice(0, 60), url: r.url, duration: r.duration ? (Math.floor(r.duration/60)+':'+String(r.duration%60).padStart(2,'0')) : '', views: r.views || '' });
   } catch {}
   if (links.length < limit) {
     try {
@@ -168,7 +168,7 @@ async function searchXvideos(query, limit) {
   const links = [];
   try {
     const rows = await yt.search('xvideos:' + query, limit).catch(() => []);
-    for (const r of rows || []) if (r.url) links.push({ title: (r.title || 'video').slice(0, 60), url: r.url });
+    for (const r of rows || []) if (r.url) links.push({ title: (r.title || 'video').slice(0, 60), url: r.url, duration: r.duration ? (Math.floor(r.duration/60)+':'+String(r.duration%60).padStart(2,'0')) : '', views: r.views || '' });
   } catch {}
   if (links.length < limit) {
     try {
@@ -217,16 +217,20 @@ function formatLinkList(title, query, links, prefix) {
   const lines = [
     '   ❀ 𓆩 ' + sans(title) + ' 𓆪 ❀',
     '',
-    'Busqueda: ' + query,
-    'Resultados: ' + links.length,
+    '  ✦ Busqueda  ── ' + String(query).slice(0, 60),
+    '  ✦ Resultados── ' + links.length,
     '',
   ];
   links.forEach((l, i) => {
-    lines.push((i + 1) + '. ' + (l.title || 'video').slice(0, 50));
-    lines.push('   ' + l.url);
-    lines.push('');
+    const dur = l.duration ? (' · ' + l.duration) : '';
+    const views = l.views ? (' · ' + l.views + ' views') : '';
+    lines.push('  ' + (i + 1) + '. *' + String(l.title || 'Video ' + (i + 1)).slice(0, 55) + '*');
+    if (l.author || dur || views) {
+      lines.push('     ' + [l.author, l.duration, l.views ? (l.views + ' views') : ''].filter(Boolean).join(' · '));
+    }
   });
-  lines.push('> 𓆩✰𓆪 Botones abajo o ' + prefix + 'nsfwpick <n>');
+  lines.push('');
+  lines.push('> Toca un boton *Video N* o ' + prefix + 'nsfwpick N');
   lines.push('   ❀');
   return lines.join('\n');
 }
@@ -235,44 +239,88 @@ async function sendLinkButtons(c, title, query, links) {
   pendingNsfw.set(c.from, { links, at: Date.now(), query, source: title });
   const caption = formatLinkList(title, query, links, c.prefix || '.');
   const pfx = c.prefix || '.';
-  const chunks = [];
-  for (let i = 0; i < links.length; i += 3) {
-    chunks.push(links.slice(i, i + 3).map((l, j) => ({ idx: i + j + 1, title: l.title, url: l.url })));
-  }
-  const firstBtns = (chunks[0] || []).map((l) => ({
-    buttonId: pfx + 'nsfwpick ' + l.idx,
-    buttonText: { displayText: 'Video ' + l.idx },
-    type: 1,
-  }));
+
+  // ── 1) Lista interactiva (botones verdaderos tipo menu) ──
   try {
-    await c.sock.sendMessage(c.from, {
+    const { proto, generateWAMessageFromContent } = require('@whiskeysockets/baileys');
+    const rows = links.slice(0, 10).map((l, i) => ({
+      title: 'Video ' + (i + 1),
+      description: String(l.title || 'Sin titulo').slice(0, 44),
+      rowId: pfx + 'nsfwpick ' + (i + 1),
+    }));
+    const sections = [{ title: 'Selecciona un video', rows }];
+    const listMsg = {
       text: caption,
       footer: 'SHARKNEX NSFW',
-      buttons: firstBtns,
-      headerType: 1,
-    }, { quoted: c.m });
+      title: sans(title),
+      buttonText: 'Ver videos',
+      sections,
+    };
+    await c.sock.sendMessage(c.from, listMsg, { quoted: c.m });
+    return;
   } catch (e) {
-    console.error('nsfw buttons:', e.message || e);
-    await c.reply(caption);
+    console.error('nsfw listMessage:', e?.message || e);
   }
-  for (let ci = 1; ci < chunks.length; ci++) {
-    const btns = chunks[ci].map((l) => ({
-      buttonId: pfx + 'nsfwpick ' + l.idx,
-      buttonText: { displayText: 'Video ' + l.idx },
-      type: 1,
-    }));
-    const labels = chunks[ci].map((l) => 'Video ' + l.idx).join(' · ');
-    try {
+
+  // ── 2) Interactive nativeFlow quick_reply (Video 1..3 por mensaje) ──
+  try {
+    const { proto, generateWAMessageFromContent } = require('@whiskeysockets/baileys');
+    for (let i = 0; i < links.length; i += 3) {
+      const chunk = links.slice(i, i + 3);
+      const buttons = chunk.map((l, j) => {
+        const n = i + j + 1;
+        return {
+          name: 'quick_reply',
+          buttonParamsJson: JSON.stringify({
+            display_text: 'Video ' + n,
+            id: pfx + 'nsfwpick ' + n,
+          }),
+        };
+      });
+      const head = i === 0 ? caption : ('   ❀ 𓆩 ' + sans('mas') + ' 𓆪 ❀\nVideos ' + (i + 1) + '-' + (i + chunk.length));
+      const msg = generateWAMessageFromContent(c.from, {
+        viewOnceMessage: {
+          message: {
+            messageContextInfo: { deviceListMetadata: {}, deviceListMetadataVersion: 2 },
+            interactiveMessage: proto.Message.InteractiveMessage.create({
+              body: proto.Message.InteractiveMessage.Body.create({ text: head }),
+              footer: proto.Message.InteractiveMessage.Footer.create({ text: 'SHARKNEX NSFW' }),
+              nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons }),
+            }),
+          },
+        },
+      }, { userJid: c.sock.user?.id, quoted: c.m });
+      await c.sock.relayMessage(c.from, msg.message, { messageId: msg.key.id });
+    }
+    return;
+  } catch (e) {
+    console.error('nsfw nativeFlow:', e?.message || e);
+  }
+
+  // ── 3) Botones legacy (max 3 por mensaje) ──
+  try {
+    for (let i = 0; i < links.length; i += 3) {
+      const chunk = links.slice(i, i + 3);
+      const btns = chunk.map((l, j) => ({
+        buttonId: pfx + 'nsfwpick ' + (i + j + 1),
+        buttonText: { displayText: 'Video ' + (i + j + 1) },
+        type: 1,
+      }));
+      const head = i === 0 ? caption : ('Videos ' + (i + 1) + '-' + (i + chunk.length));
       await c.sock.sendMessage(c.from, {
-        text: '   ❀ 𓆩 ' + sans('mas videos') + ' 𓆪 ❀\n  ' + labels,
-        footer: 'SHARKNEX',
+        text: head,
+        footer: 'SHARKNEX NSFW',
         buttons: btns,
         headerType: 1,
       }, { quoted: c.m });
-    } catch {
-      await c.reply('Mas: ' + chunks[ci].map((l) => pfx + 'nsfwpick ' + l.idx).join(' · '));
     }
+    return;
+  } catch (e) {
+    console.error('nsfw legacy buttons:', e?.message || e);
   }
+
+  // ── 4) Ultimo recurso: info sin URLs largas ──
+  await c.reply(caption);
 }
 
 async function sendPickedVideo(c, item, n) {
@@ -355,28 +403,166 @@ async function sendPickedVideo(c, item, n) {
   );
 }
 
+const FACES = {
+  anal: ['( ͡° ͜ʖ ͡°)', '(¬‿¬)', '(つ≧▽≦)つ'],
+  blowjob: ['( ͡° ͜ʖ ͡°)', '(˘ʃƪ˘)', '(๑>ᴗ<๑)'],
+  boobjob: ['(◕‿◕)♡', '( ͡° ͜ʖ ͡°)', '(≧∀≦)'],
+  cum: ['( ͡° ͜ʖ ͡°)', '(≧▽≦)', '(¬‿¬)'],
+  cummouth: ['( ͡° ͜ʖ ͡°)', '(˘ʃƪ˘)', '(≧∀≦)'],
+  cumshot: ['(≧▽≦)', '( ͡° ͜ʖ ͡°)', '(つ≧▽≦)つ'],
+  fuck: ['( ͡° ͜ʖ ͡°)', '(つ≧▽≦)つ', '(¬‿¬)', '(≧∀≦)', '(◕‿◕)♡'],
+  grabboobs: ['( ͡° ͜ʖ ͡°)', '(˘ʃƪ˘)', '(≧▽≦)'],
+  grope: ['(¬‿¬)', '( ͡° ͜ʖ ͡°)', '(つ≧▽≦)つ'],
+  handjob: ['( ͡° ͜ʖ ͡°)', '(˘ʃƪ˘)', '(≧∀≦)'],
+  lickass: ['( ͡° ͜ʖ ͡°)', '(≧▽≦)', '(¬‿¬)'],
+  lickdick: ['(˘ʃƪ˘)', '( ͡° ͜ʖ ͡°)', '(≧∀≦)'],
+  lickpussy: ['( ͡° ͜ʖ ͡°)', '(≧▽≦)', '(つ≧▽≦)つ'],
+  sixnine: ['( ͡° ͜ʖ ͡°)', '(≧∀≦)', '(¬‿¬)'],
+  spank: ['(¬‿¬)', '( ͡° ͜ʖ ͡°)', '(≧▽≦)'],
+  suckboobs: ['(˘ʃƪ˘)', '( ͡° ͜ʖ ͡°)', '(◕‿◕)♡'],
+  undress: ['( ͡° ͜ʖ ͡°)', '(≧∀≦)', '(つ≧▽≦)つ'],
+  yuri: ['(◕‿◕)♡', '(≧▽≦)', '(˘ʃƪ˘)'],
+  default: ['(つ≧▽≦)つ', '( ͡° ͜ʖ ͡°)', '(≧∀≦)', '(¬‿¬)'],
+};
+const faceOf = (name) => {
+  const arr = FACES[name] || FACES.default;
+  return arr[Math.floor(Math.random() * arr.length)];
+};
+
 const REACTS = [
   // [cmd, frasesConTarget[], frasesSolo[], aliases, sources]
-  ['anal', ['hizo anal a', 'se la metio por detras a', 'no tuvo piedad con'], ['modo anal'], [], [() => SRC.purr('anal'), () => SRC.purr('fuck')]],
-  ['blowjob', ['hizo blowjob a', 'se arrodillo por', 'le chupo todo a'], ['esta mamando'], ['mamar', 'bj'], [() => SRC.purr('blowjob'), () => SRC.purr('cum')]],
-  ['boobjob', ['hizo rusa a', 'uso las tetas con', 'apreto fuerte a'], ['hizo una rusa'], ['rusa'], [() => SRC.purr('fuck'), () => SRC.purr('neko')]],
-  ['cum', ['hizo cum a', 'se vino en', 'lleno de leche a', 'termino dentro de', 'no aguanto y se vino sobre'], ['se corrio solo'], ['eyacular'], [() => SRC.purr('cum'), () => SRC.purr('blowjob')]],
-  ['cummouth', ['hizo cum en la boca de', 'le dejo la boca llena a', 'termino en la cara de'], ['corrida en boca'], [], [() => SRC.purr('cum'), () => SRC.purr('blowjob')]],
-  ['cumshot', ['hizo cumshot a', 'disparo todo sobre', 'mancho a'], ['disparo cum'], [], [() => SRC.purr('cum'), () => SRC.purr('solo')]],
-  ['fap', ['se la jala pensando en', 'no para de tocarse por', 'se toca viendo a'], ['se esta jalando'], ['paja'], [() => SRC.purr('solo'), () => SRC.purr('cum')]],
-  ['footjob', ['hizo footjob a', 'uso los pies con'], ['hizo footjob'], [], [() => SRC.purr('fuck'), () => SRC.purr('neko')]],
-  ['fuck', ['se la follo a', 'no paro hasta cansar a', 'se empotro con', 'cogio duro a'], ['esta follando'], ['coger'], [() => SRC.purr('fuck'), () => SRC.purr('anal')]],
-  ['grabboobs', ['le agarro las tetas a', 'no solto el pecho de'], ['agarra tetas'], [], [() => SRC.purr('neko'), () => SRC.purr('fuck')]],
-  ['grope', ['le manoseo a', 'paso las manos por'], ['manosea'], [], [() => SRC.purr('neko'), () => SRC.purr('yuri')]],
-  ['handjob', ['hizo handjob a', 'le hizo la paja a'], ['hizo una paja'], [], [() => SRC.purr('solo'), () => SRC.purr('blowjob')]],
-  ['lickass', ['le lamió el culo a', 'no dejo seco a'], ['lame culo'], ['lamercullo'], [() => SRC.purr('anal'), () => SRC.purr('pussylick')]],
-  ['lickdick', ['le lamió la polla a', 'recorrio con la lengua a'], ['lame polla'], ['lamerpolla'], [() => SRC.purr('blowjob'), () => SRC.purr('cum')]],
-  ['lickpussy', ['le lamió el coño a', 'se bajo a comerse a'], ['lame'], [], [() => SRC.purr('pussylick'), () => SRC.purr('yuri')]],
-  ['sixnine', ['hizo el 69 con', 'se enredo en 69 con'], ['modo 69'], ['69'], [() => SRC.purr('pussylick'), () => SRC.purr('fuck')]],
-  ['spank', ['le dio una nalgada a', 'azote el culo de'], ['nalgada'], ['nalgada'], [() => SRC.purr('fuck'), () => SRC.purr('neko')]],
-  ['suckboobs', ['le chupo las tetas a', 'no dejo el pecho de'], ['chupa tetas'], ['chupartetas'], [() => SRC.purr('neko'), () => SRC.purr('yuri')]],
-  ['undress', ['encuero a', 'le quito la ropa a', 'dejo en pelotas a'], ['se desnudo'], ['encuerar'], [() => SRC.purr('neko'), () => SRC.purr('solo')]],
-  ['yuri', ['hizo tijeras con', 'se froto con', 'modo yuri con'], ['modo yuri'], ['tijeras'], [() => SRC.purr('yuri'), () => SRC.purr('pussylick')]],
+  ['anal', [
+    'hizo anal a', 'se la metio por detras a', 'no tuvo piedad con',
+    'la rompio por detras a', 'se la embistio a', 'le dio por el culo a',
+    'lo dejo temblando a', 'lo uso sin piedad a',
+  ], [
+    'entro en modo anal', 'se busco accion por detras', 'esta en modo salvaje',
+  ], [], [() => SRC.purr('anal'), () => SRC.purr('fuck')]],
+
+  ['blowjob', [
+    'hizo blowjob a', 'se arrodillo por', 'le chupo todo a',
+    'le dio una mamada a', 'le limpio la polla a', 'no solto la boca de',
+    'le hizo un oral intenso a', 'se trago todo de',
+  ], [
+    'esta mamando', 'practica oral solo/a', 'modo mamada activado',
+  ], ['mamar', 'bj'], [() => SRC.purr('blowjob'), () => SRC.purr('cum')]],
+
+  ['boobjob', [
+    'hizo rusa a', 'uso las tetas con', 'apreto fuerte a',
+    'le hizo una rusa a', 'apreto las tetas contra', 'envolvio con el pecho a',
+  ], [
+    'hizo una rusa', 'uso las tetas', 'modo boobjob',
+  ], ['rusa'], [() => SRC.purr('fuck'), () => SRC.purr('neko')]],
+
+  ['cum', [
+    'hizo cum a', 'se vino en', 'lleno de leche a', 'termino dentro de',
+    'no aguanto y se vino sobre', 'exploto dentro de', 'lo dejo todo blanco a',
+    'descargo todo en', 'se corrio sobre',
+  ], [
+    'se corrio solo', 'termino en el aire', 'modo corrida',
+  ], ['eyacular'], [() => SRC.purr('cum'), () => SRC.purr('blowjob')]],
+
+  ['cummouth', [
+    'hizo cum en la boca de', 'le dejo la boca llena a', 'termino en la cara de',
+    'le dio de beber a', 'cerro la boca de', 'le dejo la lengua blanca a',
+  ], [
+    'corrida en boca', 'trago todo', 'modo facial',
+  ], [], [() => SRC.purr('cum'), () => SRC.purr('blowjob')]],
+
+  ['cumshot', [
+    'le pego un cumshot a', 'disparo todo sobre', 'lo banó en leche a',
+    'le pinto la cara a', 'termino encima de',
+  ], [
+    'disparo al aire', 'cumshot solo',
+  ], [], [() => SRC.purr('cum'), () => SRC.purr('fuck')]],
+
+  ['fuck', [
+    'se empotro con', 'cogio duro a', 'folló sin parar a',
+    'lo penetro con fuerza a', 'le dio sin piedad a', 'se la metio completa a',
+    'lo uso como quiso a', 'no paro de coger con', 'lo dejo temblando a',
+    'le parto el lomo a', 'lo destrozo en la cama a', 'lo embistio a',
+    'hizo el delicioso con', 'lo montó a', 'se la cojió a',
+  ], [
+    'esta follando', 'modo salvaje activado', 'necesita accion ya',
+    'se puso caliente solo/a',
+  ], ['coger'], [() => SRC.purr('fuck'), () => SRC.purr('anal')]],
+
+  ['grabboobs', [
+    'le agarro las tetas a', 'no solto el pecho de', 'apreto fuerte el pecho de',
+    'manoseo las tetas de', 'le apreto las tetas a',
+  ], [
+    'agarra tetas', 'modo pechos',
+  ], [], [() => SRC.purr('neko'), () => SRC.purr('fuck')]],
+
+  ['grope', [
+    'le manoseo a', 'paso las manos por', 'toco sin permiso a',
+    'recorrio el cuerpo de', 'no dejo zona libre a',
+  ], [
+    'manosea', 'manos inquietas',
+  ], [], [() => SRC.purr('neko'), () => SRC.purr('yuri')]],
+
+  ['handjob', [
+    'hizo handjob a', 'le hizo la paja a', 'le masturbo a',
+    'le subio y bajo a', 'termino a mano a',
+  ], [
+    'hizo una paja', 'mano activa',
+  ], [], [() => SRC.purr('solo'), () => SRC.purr('blowjob')]],
+
+  ['lickass', [
+    'le lamio el culo a', 'no dejo seco a', 'le limpio con la lengua a',
+    'se enterro detras de',
+  ], [
+    'lame culo', 'modo rimjob',
+  ], ['lamercullo'], [() => SRC.purr('anal'), () => SRC.purr('pussylick')]],
+
+  ['lickdick', [
+    'le lamio la polla a', 'recorrio con la lengua a', 'le chupo despacio a',
+    'le dio lenguetazos a',
+  ], [
+    'lame polla', 'lengua ocupada',
+  ], ['lamerpolla'], [() => SRC.purr('blowjob'), () => SRC.purr('cum')]],
+
+  ['lickpussy', [
+    'le lamio el coño a', 'se bajo a comerse a', 'le hizo oral a',
+    'no salio de entre las piernas de', 'le dejo temblando a',
+  ], [
+    'lame', 'modo oral',
+  ], [], [() => SRC.purr('pussylick'), () => SRC.purr('yuri')]],
+
+  ['sixnine', [
+    'hizo el 69 con', 'se enredo en 69 con', 'se puso boca abajo con',
+    'compartio placer mutuo con',
+  ], [
+    'modo 69', '69 en solitario (osado)',
+  ], ['69'], [() => SRC.purr('pussylick'), () => SRC.purr('fuck')]],
+
+  ['spank', [
+    'le dio una nalgada a', 'azote el culo de', 'le dejo la marca a',
+    'le pego en el culo a', 'no paro de nalguear a',
+  ], [
+    'nalgada', 'modo disciplina',
+  ], ['nalgada'], [() => SRC.purr('fuck'), () => SRC.purr('neko')]],
+
+  ['suckboobs', [
+    'le chupo las tetas a', 'no dejo el pecho de', 'le chupo los pezones a',
+    'se quedo pegado al pecho de',
+  ], [
+    'chupa tetas', 'modo pezones',
+  ], ['chupartetas'], [() => SRC.purr('neko'), () => SRC.purr('yuri')]],
+
+  ['undress', [
+    'encuero a', 'le quito la ropa a', 'dejo en pelotas a',
+    'lo dejo en ropa interior a', 'lo desnudo sin permiso a',
+  ], [
+    'se desnudo', 'modo strip',
+  ], ['encuerar'], [() => SRC.purr('neko'), () => SRC.purr('solo')]],
+
+  ['yuri', [
+    'hizo tijeras con', 'se froto con', 'modo yuri con',
+    'se enredo con', 'compartio calor con',
+  ], [
+    'modo yuri', 'tijeras solas',
+  ], ['tijeras'], [() => SRC.purr('yuri'), () => SRC.purr('pussylick')]],
 ];
 
 const list = [];
@@ -387,14 +573,15 @@ for (const [name, withArr, soloArr, aliases, sources] of REACTS) {
     const who = c.pushName || 'Usuario';
     const withT = Array.isArray(withArr) ? withArr[Math.floor(Math.random() * withArr.length)] : withArr;
     const solo = Array.isArray(soloArr) ? soloArr[Math.floor(Math.random() * soloArr.length)] : soloArr;
+    const face = faceOf(name);
     const mentions = [];
     let text;
     if (target) {
       mentions.push(c.sender, target);
-      text = '*' + who + '* ' + withT + ' ' + tag(target);
+      text = '*' + who + '* ' + withT + ' ' + tag(target) + '\n' + face;
     } else {
       mentions.push(c.sender);
-      text = '*' + who + '* ' + solo;
+      text = '*' + who + '* ' + solo + '\n' + face;
     }
     try { await c.react('⚡'); } catch {}
     const url = await getNsfw(...sources);
@@ -446,7 +633,7 @@ list.push(mk('ph', 'Pornhub: 10 links + botones', '<query>', async (c) => {
   let links = [];
   try {
     const rows = await yt.search('pornhub:' + c.q.trim(), 10).catch(() => []);
-    for (const r of rows || []) if (r.url) links.push({ title: (r.title || 'ph').slice(0, 60), url: r.url });
+    for (const r of rows || []) if (r.url) links.push({ title: (r.title || 'ph').slice(0, 60), url: r.url, duration: r.duration ? (Math.floor(r.duration/60)+':'+String(r.duration%60).padStart(2,'0')) : '', views: r.views || '' });
   } catch {}
   while (links.length < 10) {
     const i = links.length + 1;

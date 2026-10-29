@@ -21,7 +21,7 @@ function pokeUser(n) {
 }
 
 async function randomPoke() {
-  const id = U.rand(1, 151); // gen 1
+  const id = U.rand(1, 386); // gen 1-3
   try {
     const { data } = await axios.get('https://pokeapi.co/api/v2/pokemon/' + id, {
       timeout: 12000,
@@ -180,9 +180,152 @@ const list = [
       p + 'poketop — ranking',
       p + 'pokerelease <nombre>',
       p + 'pokevs @user',
+      p + 'pokebattle @user',
+      p + 'pokeshiny — shiny raro',
+      p + 'pokeheal — curar equipo',
+      p + 'pokerank — rango',
+      p + 'pokecompare a | b',
+      p + 'pokeitem pocion|superball',
       '   ❀',
     ].join('\n'));
   }, ['menupokemon']),
+
+  mk('pokeheal', 'Cura a tu equipo (cooldown)', '', (c) => {
+    const p = pokeUser(c.senderNum);
+    if (!p.list.length) return c.reply(C.quote + 'No tienes pokemon.');
+    const wait = 120000;
+    if (Date.now() - (p.lastHeal || 0) < wait) {
+      return c.reply(C.quote + 'Espera ' + Math.ceil((wait - (Date.now() - p.lastHeal)) / 1000) + 's.');
+    }
+    p.lastHeal = Date.now();
+    p.list.forEach((x) => { x.hp = 100; });
+    db.save();
+    return c.reply([
+      '   ❀ 𓆩 ' + sans('pokeheal') + ' 𓆪 ❀',
+      'Equipo curado: ' + p.list.length + ' pokemon al 100%',
+      '   ❀',
+    ].join('\n'));
+  }, ['curarpoke']),
+
+  mk('pokebattle', 'Batalla vs otro entrenador (random)', '@usuario', async (c) => {
+    const t = (c.mentioned && c.mentioned[0]) || (c.quoted && c.quoted.sender);
+    if (!t) return c.reply(C.quote + 'Menciona a alguien: .pokebattle @user');
+    const a = pokeUser(c.senderNum);
+    const b = pokeUser(numOf(t));
+    if (!a.list.length || !b.list.length) return c.reply(C.quote + 'Ambos necesitan al menos 1 pokemon.');
+    const pa = a.list[U.rand(0, a.list.length - 1)];
+    const pb = b.list[U.rand(0, b.list.length - 1)];
+    const sa = U.rand(40, 120);
+    const sb = U.rand(40, 120);
+    const winA = sa >= sb;
+    const winner = winA ? c.pushName : nameOf(numOf(t));
+    return c.reply([
+      '   ❀ 𓆩 ' + sans('pokebattle') + ' 𓆪 ❀',
+      '',
+      c.pushName + ' uso *' + String(pa.name).toUpperCase() + '* (pwr ' + sa + ')',
+      nameOf(numOf(t)) + ' uso *' + String(pb.name).toUpperCase() + '* (pwr ' + sb + ')',
+      '',
+      'Ganador: *' + winner + '*',
+      '   ❀',
+    ].join('\n'), { mentions: [c.sender, t] });
+  }, ['batallapoke']),
+
+  mk('pokeshiny', 'Intenta encontrar un shiny (raro)', '', async (c) => {
+    const p = pokeUser(c.senderNum);
+    const wait = 90000;
+    if (Date.now() - (p.lastShiny || 0) < wait) {
+      return c.reply(C.quote + 'Espera ' + Math.ceil((wait - (Date.now() - p.lastShiny)) / 1000) + 's.');
+    }
+    p.lastShiny = Date.now();
+    const shiny = Math.random() < 0.08;
+    const poke = await randomPoke();
+    if (shiny) {
+      p.list.push({ id: poke.id, name: poke.name + ' ★', shiny: true, at: Date.now() });
+      p.catches = (p.catches || 0) + 1;
+      if (p.list.length > 60) p.list = p.list.slice(-60);
+      db.save();
+      const caption = [
+        '   ❀ 𓆩 ' + sans('pokeshiny') + ' 𓆪 ❀',
+        '¡SHINY! *' + poke.name.toUpperCase() + ' ★*',
+        'Tipo: ' + poke.types,
+        '   ❀',
+      ].join('\n');
+      if (poke.sprite) {
+        try {
+          const buf = await U.getBuffer(poke.sprite, { timeout: 15000 });
+          return c.sock.sendMessage(c.from, { image: buf, caption }, { quoted: c.m });
+        } catch {}
+      }
+      return c.reply(caption);
+    }
+    db.save();
+    return c.reply([
+      '   ❀ 𓆩 ' + sans('pokeshiny') + ' 𓆪 ❀',
+      'No hubo shiny esta vez...',
+      'Sigue intentando.',
+      '   ❀',
+    ].join('\n'));
+  }, ['shiny']),
+
+  mk('pokerank', 'Rango de entrenador segun capturas', '', (c) => {
+    const p = pokeUser(c.senderNum);
+    const n = p.catches || 0;
+    let rank = 'Novato';
+    if (n >= 10) rank = 'Entrenador';
+    if (n >= 30) rank = 'Experto';
+    if (n >= 60) rank = 'Elite';
+    if (n >= 100) rank = 'Maestro Pokemon';
+    if (n >= 200) rank = 'Campeon de la Liga';
+    return c.reply([
+      '   ❀ 𓆩 ' + sans('pokerank') + ' 𓆪 ❀',
+      'Entrenador: ' + c.pushName,
+      'Capturas: ' + n,
+      'Equipo: ' + p.list.length,
+      'Rango: *' + rank + '*',
+      '   ❀',
+    ].join('\n'));
+  }, ['rango poke', 'pokerango']),
+
+  mk('pokecompare', 'Compara dos pokemon por nombre', '<a> | <b>', async (c) => {
+    const parts = (c.q || '').split(/\s*\|\s*|\s+vs\s+/i).map((x) => x.trim()).filter(Boolean);
+    if (parts.length < 2) return c.reply(C.quote + 'Ej: .pokecompare pikachu | charizard');
+    try {
+      const [ra, rb] = await Promise.all([
+        axios.get('https://pokeapi.co/api/v2/pokemon/' + encodeURIComponent(parts[0].toLowerCase()), { timeout: 12000 }),
+        axios.get('https://pokeapi.co/api/v2/pokemon/' + encodeURIComponent(parts[1].toLowerCase()), { timeout: 12000 }),
+      ]);
+      const sum = (d) => (d.stats || []).reduce((a, s) => a + s.base_stat, 0);
+      const sa = sum(ra.data), sb = sum(rb.data);
+      return c.reply([
+        '   ❀ 𓆩 ' + sans('pokecompare') + ' 𓆪 ❀',
+        ra.data.name.toUpperCase() + ' BST: ' + sa,
+        rb.data.name.toUpperCase() + ' BST: ' + sb,
+        '',
+        'Ventaja: *' + (sa === sb ? 'Empate' : (sa > sb ? ra.data.name : rb.data.name).toUpperCase()) + '*',
+        '   ❀',
+      ].join('\n'));
+    } catch {
+      return c.reply(C.quote + 'No encontre uno de los pokemon.');
+    }
+  }, ['comparepoke']),
+
+  mk('pokeitem', 'Usa una pocion / superball (texto)', '<pocion|superball>', (c) => {
+    const q = (c.q || '').toLowerCase();
+    const p = pokeUser(c.senderNum);
+    if (!p.list.length) return c.reply(C.quote + 'Sin pokemon.');
+    if (q.includes('pocion') || q.includes('potion')) {
+      p.list.forEach((x) => { x.hp = Math.min(100, (x.hp || 50) + 30); });
+      db.save();
+      return c.reply(C.quote + 'Usaste Pocion. +30 HP al equipo.');
+    }
+    if (q.includes('super') || q.includes('ball')) {
+      p.boost = Date.now() + 300000;
+      db.save();
+      return c.reply(C.quote + 'Super Ball activa 5 min (solo roleplay de suerte).');
+    }
+    return c.reply(C.quote + 'Items: pocion | superball');
+  }, ['itempoke']),
+
 ];
 
 module.exports = list;
