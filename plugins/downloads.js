@@ -218,10 +218,15 @@ async function tiktokFlow(ctx, audioOnly) {
   const titles = [];
   for (const v of list.slice(0, 4)) {
     try {
-      // Preferir URL de pagina TikTok para yt-dlp
       let pageUrl = v.url || '';
       if (!pageUrl && v.user && v.id) pageUrl = 'https://www.tiktok.com/@' + v.user + '/video/' + v.id;
-      const buf = await dlFromUrl(pageUrl, v.video);
+      let buf = await dlFromUrl(pageUrl, v.video);
+      if (!buf && pageUrl) {
+        try {
+          const d = await ytdlp.download(pageUrl, { audio: false, height: 720, maxMB: 50, maxDuration: 180 });
+          try { buf = require('fs').readFileSync(d.file); } finally { try { d.cleanup(); } catch {} }
+        } catch (e) { console.error('tt ytdlp item:', e?.message || e); }
+      }
       if (!buf) continue;
       titles.push(String(v.title || 'video').slice(0, 50));
       const cap = card('tiktok', [
@@ -368,17 +373,25 @@ async function imagesFlow(ctx, source) {
   const q = args.join(' ').trim();
   if (!q) return ctx.reply(wrap('Dime que buscar.\nEjemplo: ' + ctx.prefix + 'pin anime aesthetic', 'pinterest'));
   await ctx.react('🔎');
-  const imgs = await social.imageSearch(q, n);
+  let imgs = [];
+  try { imgs = await social.imageSearch(q, n); } catch (e) { console.error('pin search:', e?.message || e); }
+  if (!imgs || !imgs.length) return ctx.reply(wrap('Sin imagenes para: ' + q, 'pinterest'));
   const cap = card('pinterest', [
     'Busqueda ── ' + q,
     'Resultados ── ' + imgs.length + ' imagenes',
-    'Estado ── Barrido exitoso',
+    'Estado ── 1 mensaje (collage)',
   ]);
-  const items = imgs.map((buf) => ({ image: buf }));
-  const ok = await sendAlbum(ctx, items, cap);
-  if (!ok) return ctx.reply(wrap('No pude enviar las imagenes. Intenta de nuevo.', 'pinterest'));
-  await ctx.react('✅');
+  // SIEMPRE un solo mensaje: collage (no album / no 10 mensajes sueltos)
+  try {
+    const collage = await makeCollage(imgs);
+    await ctx.sock.sendMessage(ctx.from, { image: collage, caption: cap }, { quoted: ctx.m });
+    await ctx.react('✅');
+  } catch (e) {
+    console.error('pin collage:', e?.message || e);
+    return ctx.reply(wrap('No pude armar el collage. Intenta de nuevo.', 'pinterest'));
+  }
 }
+
 
 const cmd = (name, desc, usage, run, aliases = []) => ({ name, aliases, desc, usage, category: 'downloads', run });
 

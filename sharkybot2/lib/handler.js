@@ -361,7 +361,8 @@ async function handleMessage(sock, m) {
     } catch {}
   }
   // Solo el bot primario ejecuta comandos con estado; menu/ping/descargas los puede cualquiera
-  if (isGroup && !isPrimaryFor(sock, from) && isStateful(cmd)) return;
+  // Solo el bot primario responde en el grupo (todos los comandos)
+  if (isGroup && !isPrimaryFor(sock, from)) return;
   if (cmd.owner && !isOwner) return reply('Este comando es solo para el owner.');
   // nsfw on/off siempre disponible; el resto de NSFW se bloquea si está off
   if (cmd.category === 'nsfw' && isGroup && !['nsfwtoggle', 'nsfw', 'menu2'].includes(cmd.name)) {

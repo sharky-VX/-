@@ -215,6 +215,43 @@ const list = [
     const lv = level(u.xp), next = 20 * lv * lv;
     c.reply(`⭐ *Perfil de ${n === c.senderNum ? c.pushName : '@' + n}*\n🏅 Nivel: *${lv}*\n✨ XP: ${u.xp}/${next}\n📨 Comandos usados: ${u.commands}\n💎 Patrimonio: ${coin(u.coins + u.bank)}`, { mentions: n === c.senderNum ? [] : [`${n}@s.whatsapp.net`] });
   }, ['nivel', 'perfil', 'level']),
-];
 
+  mk('ruleta', 'Ruleta de la fortuna (apuesta)', '<cantidad>', (c) => {
+    const u = db.user(c.senderNum);
+    const n = bet(c, u); if (n == null) return;
+    const mult = [0, 0, 0.5, 1, 1.5, 2, 3][U.rand(0, 6)];
+    const win = Math.floor(n * mult);
+    u.coins = (u.coins || 0) - n + win;
+    db.save();
+    if (win > n) return c.reply('🎰 Ruleta x' + mult + '! Ganaste ' + coin(win - n) + '. Cartera: ' + coin(u.coins));
+    if (win === n) return c.reply('🎰 Empate. Recuperaste ' + coin(n));
+    return c.reply('🎰 Perdiste ' + coin(n - win) + '. Cartera: ' + coin(u.coins));
+  }, ['ruletafortuna']),
+
+  mk('cofre', 'Abre un cofre diario', '', (c) => {
+    const u = db.user(c.senderNum);
+    const w = cooldown(u, 'lastChest', 24 * HOUR);
+    if (w) return c.reply('Cofre disponible en ' + w);
+    const prize = U.rand(500, 5000);
+    u.coins = (u.coins || 0) + prize;
+    db.save();
+    return c.reply('📦 Cofre abierto: +' + coin(prize) + '\nTotal: ' + coin(u.coins));
+  }, ['chest', 'dailychest']),
+
+  mk('invertir', 'Invierte monedas (riesgo)', '<cantidad>', (c) => {
+    const u = db.user(c.senderNum);
+    const n = bet(c, u); if (n == null) return;
+    const ok = Math.random() < 0.55;
+    if (ok) {
+      const gain = Math.floor(n * (1 + Math.random()));
+      u.coins = (u.coins || 0) - n + gain;
+      db.save();
+      return c.reply('📈 Inversion exitosa +' + coin(gain - n) + '. Total: ' + coin(u.coins));
+    }
+    u.coins = (u.coins || 0) - n;
+    db.save();
+    return c.reply('📉 Inversion fallida. Perdiste ' + coin(n));
+  }, ['invest']),
+
+];
 module.exports = list;

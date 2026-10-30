@@ -140,25 +140,78 @@ async function getNsfw() {
 async function searchXnxx(query, limit) {
   limit = limit || 10;
   const links = [];
+  const seen = new Set();
+
+  // 1) yt-dlp xnxxsearch (titulos reales)
   try {
-    const rows = await yt.search('xnxx:' + query, limit).catch(() => []);
-    for (const r of rows || []) if (r.url) links.push({ title: (r.title || 'video').slice(0, 60), url: r.url, duration: r.duration ? (Math.floor(r.duration/60)+':'+String(r.duration%60).padStart(2,'0')) : '', views: r.views || '' });
-  } catch {}
+    const rows = await yt.search(query, limit, 'xnxxsearch').catch(() => []);
+    for (const r of rows || []) {
+      if (!r.url || seen.has(r.url)) continue;
+      if (!/xnxx\.com/i.test(r.url)) continue;
+      seen.add(r.url);
+      links.push({
+        title: String(r.title || 'Video').replace(/\s+/g, ' ').trim().slice(0, 80),
+        url: r.url,
+        duration: r.duration || '',
+        quality: r.height ? (r.height + 'p') : '720p',
+      });
+    }
+  } catch (e) { console.error('xnxx ytdlp:', e?.message || e); }
+
+  // 2) Scrape HTML xnxx
   if (links.length < limit) {
     try {
       const { data: html } = await axios.get('https://www.xnxx.com/search/' + encodeURIComponent(query), {
-        headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 20000, responseType: 'text',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+        timeout: 25000,
+        responseType: 'text',
       });
-      const re = /href="(\/video-[a-z0-9]+\/[^"]+)"[^>]*>([^<]{0,80})/gi;
-      let m;
-      const seen = new Set(links.map((l) => l.url));
-      while ((m = re.exec(String(html))) && links.length < limit) {
-        const url = 'https://www.xnxx.com' + m[1];
+      const h = String(html);
+      // bloques thumb-block
+      const blockRe = /<div[^>]*class="[^"]*thumb-block[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/gi;
+      let bm;
+      while ((bm = blockRe.exec(h)) && links.length < limit) {
+        const block = bm[1];
+        const href = block.match(/href="(\/video-[^"]+)"/i);
+        if (!href) continue;
+        const url = 'https://www.xnxx.com' + href[1].split('#')[0];
         if (seen.has(url)) continue;
         seen.add(url);
-        links.push({ title: (m[2] || 'xnxx').replace(/\s+/g, ' ').trim().slice(0, 60) || 'xnxx video', url });
+        let title = '';
+        const t1 = block.match(/title="([^"]{3,120})"/i);
+        const t2 = block.match(/<a[^>]+href="\/video-[^"]+"[^>]*>\s*([^<]{3,120})\s*</i);
+        title = (t1 && t1[1]) || (t2 && t2[1]) || '';
+        title = title.replace(/\s+/g, ' ').trim();
+        if (!title || /^xnxx$/i.test(title)) {
+          // slug from url
+          const slug = href[1].split('/').pop() || '';
+          title = decodeURIComponent(slug).replace(/[-_]+/g, ' ').slice(0, 80) || 'Video xnxx';
+        }
+        let duration = '';
+        const d1 = block.match(/(\d{1,2}\s*min(?:\s*\d{1,2}\s*sec)?)/i);
+        const d2 = block.match(/data-duration="(\d+)"/i);
+        if (d1) duration = d1[1].replace(/\s+/g, ' ');
+        else if (d2) duration = Number(d2[1]);
+        let quality = '';
+        const q1 = block.match(/(\d{3,4})p/i);
+        if (q1) quality = q1[1] + 'p';
+        links.push({ title: title.slice(0, 80), url, duration, quality: quality || '720p' });
       }
-    } catch (e) { console.error('xnxx search', e.message || e); }
+      // fallback regex simple
+      if (links.length < 3) {
+        const re = /href="(\/video-[a-z0-9]+\/[^"]+)"[^>]*title="([^"]+)"/gi;
+        let m;
+        while ((m = re.exec(h)) && links.length < limit) {
+          const url = 'https://www.xnxx.com' + m[1];
+          if (seen.has(url)) continue;
+          seen.add(url);
+          links.push({ title: m[2].replace(/\s+/g, ' ').trim().slice(0, 80), url, duration: '', quality: '720p' });
+        }
+      }
+    } catch (e) { console.error('xnxx html:', e?.message || e); }
   }
   return links.slice(0, limit);
 }
@@ -166,25 +219,35 @@ async function searchXnxx(query, limit) {
 async function searchXvideos(query, limit) {
   limit = limit || 10;
   const links = [];
+  const seen = new Set();
   try {
-    const rows = await yt.search('xvideos:' + query, limit).catch(() => []);
-    for (const r of rows || []) if (r.url) links.push({ title: (r.title || 'video').slice(0, 60), url: r.url, duration: r.duration ? (Math.floor(r.duration/60)+':'+String(r.duration%60).padStart(2,'0')) : '', views: r.views || '' });
-  } catch {}
+    const rows = await yt.search(query, limit, 'xvideossearch').catch(() => []);
+    for (const r of rows || []) {
+      if (!r.url || seen.has(r.url)) continue;
+      seen.add(r.url);
+      links.push({
+        title: String(r.title || 'Video').slice(0, 80),
+        url: r.url,
+        duration: r.duration || '',
+        quality: r.height ? (r.height + 'p') : '720p',
+      });
+    }
+  } catch (e) { console.error('xvideos ytdlp:', e?.message || e); }
   if (links.length < limit) {
     try {
       const { data: html } = await axios.get('https://www.xvideos.com/?k=' + encodeURIComponent(query), {
-        headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 20000, responseType: 'text',
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36' },
+        timeout: 20000, responseType: 'text',
       });
       const re = /href="(\/video\.[^"]+)"[^>]*title="([^"]+)"/gi;
       let m;
-      const seen = new Set(links.map((l) => l.url));
       while ((m = re.exec(String(html))) && links.length < limit) {
         const url = 'https://www.xvideos.com' + m[1];
         if (seen.has(url)) continue;
         seen.add(url);
-        links.push({ title: (m[2] || 'xvideos').slice(0, 60), url });
+        links.push({ title: m[2].slice(0, 80), url, duration: '', quality: '720p' });
       }
-    } catch (e) { console.error('xvideos search', e.message || e); }
+    } catch (e) { console.error('xvideos html:', e?.message || e); }
   }
   return links.slice(0, limit);
 }
@@ -213,193 +276,298 @@ async function searchHentaila(query, limit) {
   return links.slice(0, limit);
 }
 
+function formatDur(sec) {
+  if (sec == null || sec === '') return '';
+  if (typeof sec === 'string' && /min|sec|:/i.test(sec)) return sec;
+  const n = Number(sec);
+  if (!n || n < 0) return '';
+  const m = Math.floor(n / 60);
+  const s = Math.floor(n % 60);
+  if (m >= 1) return m + 'min' + (s ? (' ' + s + 'sec') : '');
+  return s + 'sec';
+}
+
 function formatLinkList(title, query, links, prefix) {
   const lines = [
-    '   ❀ 𓆩 ' + sans(title) + ' 𓆪 ❀',
-    '',
-    '  ✦ Busqueda  ── ' + String(query).slice(0, 60),
-    '  ✦ Resultados── ' + links.length,
+    '✦❖° *RESULTADOS*',
     '',
   ];
-  links.forEach((l, i) => {
-    const dur = l.duration ? (' · ' + l.duration) : '';
-    const views = l.views ? (' · ' + l.views + ' views') : '';
-    lines.push('  ' + (i + 1) + '. *' + String(l.title || 'Video ' + (i + 1)).slice(0, 55) + '*');
-    if (l.author || dur || views) {
-      lines.push('     ' + [l.author, l.duration, l.views ? (l.views + ' views') : ''].filter(Boolean).join(' · '));
-    }
+  links.slice(0, 10).forEach((l, i) => {
+    const dur = formatDur(l.duration || l.dur);
+    const qual = l.quality || l.height ? (String(l.quality || (l.height + 'p'))) : '';
+    lines.push('↳ *' + (i + 1) + '.* ' + String(l.title || 'Video').slice(0, 70));
+    const meta = [];
+    if (dur) meta.push('Duración: ' + dur);
+    if (qual) meta.push('Calidad: ' + qual);
+    if (meta.length) lines.push('   · ' + meta.join(' · '));
+    lines.push('');
   });
-  lines.push('');
-  lines.push('> Toca un boton *Video N* o ' + prefix + 'nsfwpick N');
-  lines.push('   ❀');
+  lines.push('_Elige un video con los botones_');
   return lines.join('\n');
 }
 
 async function sendLinkButtons(c, title, query, links) {
-  pendingNsfw.set(c.from, { links, at: Date.now(), query, source: title });
-  const caption = formatLinkList(title, query, links, c.prefix || '.');
+  if (!links.length) {
+    return c.reply(C.quote + 'Sin resultados.');
+  }
+  // Un solo mensaje · max 3 resultados · 3 botones (como el ejemplo)
+  const list = links.slice(0, 3);
+  pendingNsfw.set(c.from, { links: links.slice(0, 10), at: Date.now(), query, source: title });
   const pfx = c.prefix || '.';
 
-  // ── 1) Lista interactiva (botones verdaderos tipo menu) ──
+  const lines = ['✦❖° *RESULTADOS*', ''];
+  list.forEach((l, i) => {
+    const n = i + 1;
+    const dur = formatDur(l.duration || l.dur);
+    const qual = l.quality || (l.height ? (l.height + 'p') : '') || '720p';
+    lines.push('↳ *' + n + '.* ' + String(l.title || 'Video').slice(0, 80));
+    if (dur) lines.push('   · Duración: ' + dur + ' · Calidad: ' + qual);
+    else lines.push('   · Calidad: ' + qual);
+    lines.push('');
+  });
+  lines.push('_Elige un video con los botones_');
+  const text = lines.join('\n');
+
+  const btns = list.map((l, i) => ({
+    buttonId: pfx + 'nsfwpick ' + (i + 1),
+    buttonText: { displayText: 'Video ' + (i + 1) },
+    type: 1,
+  }));
+
+  // 1) Botones verdaderos
+  try {
+    await c.sock.sendMessage(c.from, {
+      text,
+      footer: 'SHARKNEX',
+      buttons: btns,
+      headerType: 1,
+    }, { quoted: c.m });
+    return;
+  } catch (e) {
+    console.error('nsfw buttons:', e?.message || e);
+  }
+
+  // 2) Interactive
   try {
     const { proto, generateWAMessageFromContent } = require('@whiskeysockets/baileys');
-    const rows = links.slice(0, 10).map((l, i) => ({
-      title: 'Video ' + (i + 1),
-      description: String(l.title || 'Sin titulo').slice(0, 44),
-      rowId: pfx + 'nsfwpick ' + (i + 1),
+    const buttons = list.map((l, i) => ({
+      name: 'quick_reply',
+      buttonParamsJson: JSON.stringify({
+        display_text: 'Video ' + (i + 1),
+        id: pfx + 'nsfwpick ' + (i + 1),
+      }),
     }));
-    const sections = [{ title: 'Selecciona un video', rows }];
-    const listMsg = {
-      text: caption,
-      footer: 'SHARKNEX NSFW',
-      title: sans(title),
-      buttonText: 'Ver videos',
-      sections,
-    };
-    await c.sock.sendMessage(c.from, listMsg, { quoted: c.m });
-    return;
-  } catch (e) {
-    console.error('nsfw listMessage:', e?.message || e);
-  }
-
-  // ── 2) Interactive nativeFlow quick_reply (Video 1..3 por mensaje) ──
-  try {
-    const { proto, generateWAMessageFromContent } = require('@whiskeysockets/baileys');
-    for (let i = 0; i < links.length; i += 3) {
-      const chunk = links.slice(i, i + 3);
-      const buttons = chunk.map((l, j) => {
-        const n = i + j + 1;
-        return {
-          name: 'quick_reply',
-          buttonParamsJson: JSON.stringify({
-            display_text: 'Video ' + n,
-            id: pfx + 'nsfwpick ' + n,
+    const msg = generateWAMessageFromContent(c.from, {
+      viewOnceMessage: {
+        message: {
+          interactiveMessage: proto.Message.InteractiveMessage.create({
+            body: proto.Message.InteractiveMessage.Body.create({ text }),
+            footer: proto.Message.InteractiveMessage.Footer.create({ text: 'SHARKNEX' }),
+            nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons }),
           }),
-        };
-      });
-      const head = i === 0 ? caption : ('   ❀ 𓆩 ' + sans('mas') + ' 𓆪 ❀\nVideos ' + (i + 1) + '-' + (i + chunk.length));
-      const msg = generateWAMessageFromContent(c.from, {
-        viewOnceMessage: {
-          message: {
-            messageContextInfo: { deviceListMetadata: {}, deviceListMetadataVersion: 2 },
-            interactiveMessage: proto.Message.InteractiveMessage.create({
-              body: proto.Message.InteractiveMessage.Body.create({ text: head }),
-              footer: proto.Message.InteractiveMessage.Footer.create({ text: 'SHARKNEX NSFW' }),
-              nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons }),
-            }),
-          },
         },
-      }, { userJid: c.sock.user?.id, quoted: c.m });
-      await c.sock.relayMessage(c.from, msg.message, { messageId: msg.key.id });
-    }
+      },
+    }, { userJid: c.sock.user?.id, quoted: c.m });
+    await c.sock.relayMessage(c.from, msg.message, { messageId: msg.key.id });
     return;
   } catch (e) {
-    console.error('nsfw nativeFlow:', e?.message || e);
+    console.error('nsfw flow:', e?.message || e);
   }
 
-  // ── 3) Botones legacy (max 3 por mensaje) ──
+  // 3) Texto (sin botones el cliente no los soporta)
+  await c.reply(text + '\n\n' + list.map((_, i) => pfx + 'nsfwpick ' + (i + 1)).join(' · '));
+}
+
+
+/** Extrae URL directa de video desde paginas xnxx / xvideos */
+async function extractDirectVideoUrl(pageUrl) {
+  const u = String(pageUrl || '');
+  if (!/^https?:\/\//i.test(u)) return null;
   try {
-    for (let i = 0; i < links.length; i += 3) {
-      const chunk = links.slice(i, i + 3);
-      const btns = chunk.map((l, j) => ({
-        buttonId: pfx + 'nsfwpick ' + (i + j + 1),
-        buttonText: { displayText: 'Video ' + (i + j + 1) },
-        type: 1,
-      }));
-      const head = i === 0 ? caption : ('Videos ' + (i + 1) + '-' + (i + chunk.length));
-      await c.sock.sendMessage(c.from, {
-        text: head,
-        footer: 'SHARKNEX NSFW',
-        buttons: btns,
-        headerType: 1,
-      }, { quoted: c.m });
-    }
-    return;
+    const { data: html } = await axios.get(u, {
+      timeout: 25000,
+      responseType: 'text',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': /xvideos/i.test(u) ? 'https://www.xvideos.com/' : 'https://www.xnxx.com/',
+      },
+      maxRedirects: 5,
+    });
+    const h = String(html);
+    const tryMatch = (re) => {
+      const m = h.match(re);
+      if (!m) return null;
+      let found = m[1] || m[0];
+      found = String(found).replace(/\\u0026/g, '&').replace(/&amp;/g, '&');
+      if (!/^https?:\/\//i.test(found)) return null;
+      if (/\.(js|css|jpg|jpeg|png|gif|webp)(\?|$)/i.test(found)) return null;
+      return found;
+    };
+    return (
+      tryMatch(/html5player\.setVideoUrlHigh\(['"]([^'"]+)['"]\)/i) ||
+      tryMatch(/html5player\.setVideoUrlLow\(['"]([^'"]+)['"]\)/i) ||
+      tryMatch(/setVideoUrlHigh\(['"]([^'"]+)['"]\)/i) ||
+      tryMatch(/setVideoUrlLow\(['"]([^'"]+)['"]\)/i) ||
+      tryMatch(/html5player\.setVideoHLS\(['"]([^'"]+)['"]\)/i) ||
+      tryMatch(/"contentUrl"\s*:\s*"([^"]+\.mp4[^"]*)"/i) ||
+      tryMatch(/https?:\/\/[^"'\s]+\.mp4[^"'\s]*/i)
+    );
   } catch (e) {
-    console.error('nsfw legacy buttons:', e?.message || e);
+    console.error('extractDirect:', e?.message || e);
   }
+  return null;
+}
 
-  // ── 4) Ultimo recurso: info sin URLs largas ──
-  await c.reply(caption);
+async function downloadUrlBuffer(url, referer) {
+  const { data } = await axios.get(url, {
+    responseType: 'arraybuffer',
+    timeout: 180000,
+    maxContentLength: 80 * 1024 * 1024,
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36',
+      Referer: referer || url,
+      Accept: '*/*',
+    },
+  });
+  return Buffer.from(data);
+}
+
+function isRealVideo(buf) {
+  if (!buf || buf.length < 50 * 1024) return false;
+  try {
+    if (buf.slice(4, 8).toString('ascii') === 'ftyp') return true;
+  } catch {}
+  if (buf[0] === 0x1a && buf[1] === 0x45) return true;
+  const head = buf.slice(0, 120).toString('utf8').toLowerCase();
+  if (head.includes('<!doctype') || head.includes('<html') || head.includes('{')) return false;
+  return buf.length > 300 * 1024;
+}
+
+async function ensurePlayableMp4(buf, hintExt) {
+  if (!buf || buf.length < 1000) return null;
+  // Ya es MP4 (caja ftyp)
+  try {
+    if (buf.slice(4, 8).toString('ascii') === 'ftyp') return buf;
+  } catch {}
+  // Convertir webm/mkv/gif/etc a mp4 reproducible en WhatsApp
+  const ext = hintExt || 'webm';
+  try {
+    if (media.toMp4Fast) {
+      const out = await media.toMp4Fast(buf, ext);
+      if (out && out.length > 1000) return out;
+    }
+  } catch (e) { console.error('nsfw toMp4Fast:', e?.message || e); }
+  try {
+    const out = await media.toMp4(buf, ext);
+    if (out && out.length > 1000) return out;
+  } catch (e) { console.error('nsfw toMp4:', e?.message || e); }
+  return null;
 }
 
 async function sendPickedVideo(c, item, n) {
   const title = item.title || 'video';
-  const urls = [item.url, item.sample].filter(Boolean);
+  const pageUrl = item.url;
   await c.reply(C.quote + 'Descargando *' + n + '* — ' + String(title).slice(0, 40) + '...');
 
-  async function sendBuf(buf, kind) {
-    if (!buf || buf.length < 800) return false;
-    const cap = '   ❀ 𓆩 ' + sans('nsfw') + ' 𓆪 ❀\n  ✦ ' + String(title).slice(0, 80) + '\n   ❀';
+  const cap = [
+    '   ❀ 𓆩 ' + sans('nsfw') + ' 𓆪 ❀',
+    '  ✦ ' + String(title).slice(0, 90),
+    '   ❀',
+  ].join('\n');
+
+  async function sendMp4(buf) {
+    if (!isRealVideo(buf)) {
+      console.error('nsfw reject bad buffer', buf && buf.length);
+      return false;
+    }
+    let out = buf;
+    // Si no es mp4, convertir
+    if (buf.slice(4, 8).toString('ascii') !== 'ftyp') {
+      const conv = await ensurePlayableMp4(buf, 'webm');
+      if (conv && isRealVideo(conv)) out = conv;
+    }
     try {
-      if (kind === 'video' || (buf[0] === 0x00 && buf[1] === 0x00)) {
-        await c.sock.sendMessage(c.from, { video: buf, caption: cap, mimetype: 'video/mp4' }, { quoted: c.m });
-        return true;
+      if (out.length > 64 * 1024 * 1024) {
+        await c.sock.sendMessage(c.from, {
+          document: out,
+          mimetype: 'video/mp4',
+          fileName: 'video_' + n + '.mp4',
+          caption: cap,
+        }, { quoted: c.m });
+      } else {
+        await c.sock.sendMessage(c.from, {
+          video: out,
+          mimetype: 'video/mp4',
+          fileName: 'video.mp4',
+          caption: cap,
+        }, { quoted: c.m });
       }
-      // gif/webm -> intentar video
-      if (kind === 'gif') {
-        try {
-          const mp4 = await media.toMp4HD(buf, 720, 'gif').catch(() => media.toMp4(buf, 'gif'));
-          if (mp4) {
-            await c.sock.sendMessage(c.from, { video: mp4, caption: cap, gifPlayback: true, mimetype: 'video/mp4' }, { quoted: c.m });
-            return true;
-          }
-        } catch {}
-      }
-      await c.sock.sendMessage(c.from, { image: buf, caption: cap }, { quoted: c.m });
       return true;
     } catch (e) {
-      console.error('sendBuf nsfw:', e?.message || e);
+      console.error('nsfw send:', e?.message || e);
       try {
-        await c.sock.sendMessage(c.from, { document: buf, mimetype: kind === 'video' ? 'video/mp4' : 'application/octet-stream', fileName: 'nsfw_' + n + '.mp4', caption: cap }, { quoted: c.m });
+        await c.sock.sendMessage(c.from, {
+          document: out,
+          mimetype: 'video/mp4',
+          fileName: 'video_' + n + '.mp4',
+          caption: cap,
+        }, { quoted: c.m });
         return true;
       } catch (e2) {
-        console.error('sendDoc nsfw:', e2?.message || e2);
+        console.error('nsfw doc:', e2?.message || e2);
         return false;
       }
     }
   }
 
-  for (const url of urls) {
-    const isVid = /\.(mp4|webm|mkv|mov)(\?|$)/i.test(url) || /video\.(rule34|gelbooru|cdn)/i.test(url);
-    const isImg = /\.(gif|jpe?g|png|webp)(\?|$)/i.test(url);
-    // Direct CDN download
-    try {
-      const buf = await U.getBuffer(url, {
-        timeout: 120000,
-        maxContentLength: (Number(config.maxFileMB) || 80) * 1024 * 1024,
-        headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://rule34.xxx/' },
-      });
-      if (buf && buf.length > 1000) {
-        const ok = await sendBuf(buf, isVid ? 'video' : isImg && /\.gif/i.test(url) ? 'gif' : isImg ? 'image' : 'video');
-        if (ok) return;
+  // 1) Scrape URL directa del player (xnxx/xvideos)
+  try {
+    const direct = await extractDirectVideoUrl(pageUrl);
+    if (direct) {
+      console.log('nsfw direct url', direct.slice(0, 80));
+      if (/\.m3u8(\\?|$)/i.test(direct)) {
+        // HLS: yt-dlp sobre la URL del m3u8
+        try {
+          const d = await yt.download(direct, { audio: false, height: 720, maxMB: 64, maxDuration: 480 });
+          try {
+            const buf = fs.readFileSync(d.file);
+            if (await sendMp4(buf)) return;
+          } finally { try { d.cleanup(); } catch {} }
+        } catch (e) { console.error('nsfw m3u8:', e?.message || e); }
+      } else {
+        const buf = await downloadUrlBuffer(direct, pageUrl);
+        if (await sendMp4(buf)) return;
       }
-    } catch (e) {
-      console.error('nsfw direct:', e?.message || e);
     }
-    // yt-dlp (paginas xnxx/xvideos/ph)
-    try {
-      if (!yt.valid(url)) continue;
-      const d = await yt.download(url, {
-        audio: false,
-        height: 1080,
-        maxMB: Number(config.maxFileMB) || 80,
-        maxDuration: Number(config.maxDurationSec) || 600,
-      });
+  } catch (e) {
+    console.error('nsfw extract path:', e?.message || e);
+  }
+
+  // 2) yt-dlp sobre la pagina (a veces funciona en xvideos/ph)
+  try {
+    if (yt.valid(pageUrl)) {
+      const d = await yt.download(pageUrl, { audio: false, height: 720, maxMB: 64, maxDuration: 480 });
       try {
         const buf = fs.readFileSync(d.file);
-        const ok = await sendBuf(buf, 'video');
-        if (ok) return;
-      } finally {
-        try { d.cleanup(); } catch {}
-      }
-    } catch (e) {
-      console.error('nsfw ytdlp:', e?.message || e);
+        if (await sendMp4(buf)) return;
+      } finally { try { d.cleanup(); } catch {} }
     }
+  } catch (e) {
+    console.error('nsfw ytdlp page:', e?.message || e);
+  }
+
+  // 3) CDN sample/file_url (maplestar/rule34)
+  if (item.sample && item.sample !== pageUrl) {
+    try {
+      const buf = await downloadUrlBuffer(item.sample, pageUrl);
+      if (await sendMp4(buf)) return;
+    } catch (e) { console.error('nsfw sample:', e?.message || e); }
   }
 
   return c.reply(
-    C.quote + 'No pude descargar el archivo (bloqueo, peso o enlace invalido).\n\nAbre manualmente:\n' + (item.url || '')
+    C.quote + 'No pude obtener un video valido (XNXX a veces bloquea).\nPrueba *Video 1/3* otro o .xvideos / .ph\n' + pageUrl
   );
 }
 
@@ -613,60 +781,20 @@ list.push(mk('rule34', 'Rule34: 10 media + botones', '<tag>', async (c) => {
   await sendLinkButtons(c, 'rule34', tags, links);
 }, ['r34', 'r34vid']));
 
-list.push(mk('xnxx', 'XNXX: 10 links + botones', '<query>', async (c) => {
-  if (!c.q) return c.reply(C.quote + 'Ej: ' + c.prefix + 'xnxx hentai');
-  await c.react('🔞');
-  const links = await searchXnxx(c.q.trim(), 10);
-  await sendLinkButtons(c, 'xnxx', c.q.trim(), links);
-}, ['xxx']));
 
-list.push(mk('xvideos', 'XVideos: 10 links + botones', '<query>', async (c) => {
-  if (!c.q) return c.reply(C.quote + 'Ej: ' + c.prefix + 'xvideos hentai');
-  await c.react('🔞');
-  const links = await searchXvideos(c.q.trim(), 10);
-  await sendLinkButtons(c, 'xvideos', c.q.trim(), links);
-}, ['xv']));
 
-list.push(mk('ph', 'Pornhub: 10 links + botones', '<query>', async (c) => {
-  if (!c.q) return c.reply(C.quote + 'Ej: ' + c.prefix + 'ph hentai');
-  await c.react('🔞');
-  let links = [];
-  try {
-    const rows = await yt.search('pornhub:' + c.q.trim(), 10).catch(() => []);
-    for (const r of rows || []) if (r.url) links.push({ title: (r.title || 'ph').slice(0, 60), url: r.url, duration: r.duration ? (Math.floor(r.duration/60)+':'+String(r.duration%60).padStart(2,'0')) : '', views: r.views || '' });
-  } catch {}
-  while (links.length < 10) {
-    const i = links.length + 1;
-    links.push({
-      title: 'pornhub #' + i + ' · ' + c.q,
-      url: 'https://www.pornhub.com/video/search?search=' + encodeURIComponent(c.q.trim()) + (i > 1 ? '&page=' + i : ''),
-    });
-  }
-  await sendLinkButtons(c, 'pornhub', c.q.trim(), links.slice(0, 10));
-}, ['pornhub']));
 
-list.push(mk('hentaila', 'HentaiLA: 10 links + botones', '<titulo>', async (c) => {
-  if (!c.q) return c.reply(C.quote + 'Ej: ' + c.prefix + 'hentaila overflow');
-  await c.react('🔞');
-  const links = await searchHentaila(c.q.trim(), 10);
-  await sendLinkButtons(c, 'hentaila', c.q.trim(), links);
-}, ['hla']));
 
-list.push(mk('maplestar', 'Maplestar: 10 media + botones', '<nombre>', async (c) => {
-  const q = (c.q || '').trim();
-  await c.react('🔞');
-  const tags = q ? ('maplestar ' + q) : 'maplestar';
-  let links = await listMediaLinks(tags, 10);
-  if (!links.length) links = await listMediaLinks('maplestar animated', 10);
-  if (!links.length) links = await listMediaLinks('maplestory', 10);
-  if (!links.length) return c.reply(C.quote + 'Sin resultados Maplestar. Prueba: ' + c.prefix + 'maplestar girl');
-  await sendLinkButtons(c, 'maplestar', q || 'maplestar', links);
-}, ['maple']));
+
+
+
+
+
 
 list.push(mk('nsfwpick', 'Descarga el video del boton o numero', '<numero>', async (c) => {
   const pack = pendingNsfw.get(c.from);
   if (!pack || !pack.links || !pack.links.length) {
-    return c.reply(C.quote + 'No hay busqueda. Usa .xnxx / .xxx / .maplestar / .hentaila');
+    return c.reply(C.quote + 'No hay busqueda. Usa .rule34 / .menu2');
   }
   if (Date.now() - pack.at > 600000) {
     pendingNsfw.delete(c.from);

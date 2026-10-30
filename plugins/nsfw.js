@@ -781,66 +781,20 @@ list.push(mk('rule34', 'Rule34: 10 media + botones', '<tag>', async (c) => {
   await sendLinkButtons(c, 'rule34', tags, links);
 }, ['r34', 'r34vid']));
 
-list.push(mk('xnxx', 'XNXX: mejores + botones', '<query>', async (c) => {
-  if (!c.q) return c.reply(C.quote + 'Ej: ' + c.prefix + 'xnxx hentai');
-  await c.react('🔞');
-  const links = await searchXnxx(c.q.trim(), 10);
-  await sendLinkButtons(c, 'xnxx', c.q.trim(), links);
-}, ['xxx']));
 
-list.push(mk('xvideos', 'XVideos: mejores + botones', '<query>', async (c) => {
-  if (!c.q) return c.reply(C.quote + 'Ej: ' + c.prefix + 'xvideos hentai');
-  await c.react('🔞');
-  const links = await searchXvideos(c.q.trim(), 10);
-  await sendLinkButtons(c, 'xvideos', c.q.trim(), links);
-}, ['xv']));
 
-list.push(mk('ph', 'Pornhub: 10 links + botones', '<query>', async (c) => {
-  if (!c.q) return c.reply(C.quote + 'Ej: ' + c.prefix + 'ph hentai');
-  await c.react('🔞');
-  let links = [];
-  try {
-    const rows = await yt.search('pornhub:' + c.q.trim(), 10).catch(() => []);
-    for (const r of rows || []) if (r.url) links.push({ title: (r.title || 'ph').slice(0, 70), url: r.url, duration: r.duration || '', quality: r.height ? (r.height + 'p') : (r.quality || ''), views: r.views || '' });
-  } catch {}
-  while (links.length < 10) {
-    const i = links.length + 1;
-    links.push({
-      title: 'pornhub #' + i + ' · ' + c.q,
-      url: 'https://www.pornhub.com/video/search?search=' + encodeURIComponent(c.q.trim()) + (i > 1 ? '&page=' + i : ''),
-    });
-  }
-  await sendLinkButtons(c, 'pornhub', c.q.trim(), links.slice(0, 10));
-}, ['pornhub']));
 
-list.push(mk('hentaila', 'HentaiLA: mejores + botones', '<titulo>', async (c) => {
-  if (!c.q) return c.reply(C.quote + 'Ej: ' + c.prefix + 'hentaila overflow');
-  await c.react('🔞');
-  const links = await searchHentaila(c.q.trim(), 10);
-  await sendLinkButtons(c, 'hentaila', c.q.trim(), links);
-}, ['hla']));
 
-list.push(mk('maplestar', 'Maplestar: mejores + botones', '<nombre>', async (c) => {
-  const q = (c.q || '').trim();
-  await c.react('🔞');
-  const tags = q ? ('maplestar ' + q + ' video') : 'maplestar video animated';
-  let links = await listMediaLinks(tags, 10);
-  if (!links.length) links = await listMediaLinks('maplestar animated', 10);
-  if (!links.length) links = await listMediaLinks('maplestar', 10);
-  // Preferir URLs de video
-  links = links.sort((a, b) => {
-    const av = /\.(mp4|webm)(\?|$)/i.test(a.url) ? 0 : 1;
-    const bv = /\.(mp4|webm)(\?|$)/i.test(b.url) ? 0 : 1;
-    return av - bv;
-  });
-  if (!links.length) return c.reply(C.quote + 'Sin resultados Maplestar.');
-  await sendLinkButtons(c, 'maplestar', q || 'maplestar', links);
-}, ['maple']));
+
+
+
+
+
 
 list.push(mk('nsfwpick', 'Descarga el video del boton o numero', '<numero>', async (c) => {
   const pack = pendingNsfw.get(c.from);
   if (!pack || !pack.links || !pack.links.length) {
-    return c.reply(C.quote + 'No hay busqueda. Usa .xnxx / .xxx / .maplestar / .hentaila');
+    return c.reply(C.quote + 'No hay busqueda. Usa .rule34 / .menu2');
   }
   if (Date.now() - pack.at > 600000) {
     pendingNsfw.delete(c.from);

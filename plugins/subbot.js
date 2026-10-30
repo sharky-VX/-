@@ -99,59 +99,64 @@ module.exports = [
     return out(`No pude contactar a WhatsApp para cerrar la sesion de +${n}, pero borre la sesion del bot para que no vuelva a conectarse.\n${phone}\nDesde Termux tambien puedes: node scripts/unlink.js ${n}`);
   }, ['quitarsubbot', 'stopsubbot', 'desvincular']),
 
-  mk('setprimary', 'Elige que bot contesta en este grupo', '@bot | main | off', async (c) => {
-    if (!c.isGroup) return c.reply('Esto se usa dentro de un grupo.');
-    if (!(await c.isAdmin()) && !c.isOwner) return c.reply('Solo los admins del grupo (o el owner) pueden elegir el bot primario.');
-    const st = require('../lib/state');
+  mk('setprimary', 'Establece el bot primario del grupo', '@bot', async (c) => {
+    if (!c.isGroup) return c.reply('Solo en grupos.');
+    if (!(await c.isAdmin()) && !c.isOwner) return c.reply('Solo admins u owner.');
+    const stt = require('../lib/state');
     const chat = db.chat(c.from);
-    const mainN = st.mainSock?.user ? subbots.num(st.mainSock.user.id) : '';
+    const mainN = stt.mainSock?.user ? subbots.num(stt.mainSock.user.id) : '';
     const bots = [];
-    if (mainN) bots.push({ num: mainN, label: 'principal', sock: st.mainSock });
+    if (mainN) bots.push({ num: mainN, label: 'principal', sock: stt.mainSock });
     for (const s of subbots.list()) if (s.status === 'online') bots.push({ num: s.num, label: 'sub bot', sock: subbots.sockOf(s.num) });
 
     const mentioned = (c.mentioned && c.mentioned[0]) || (c.quoted && c.quoted.sender);
-    const a = (c.args[0] || '').toLowerCase();
-
-    if (!a && !mentioned) {
-      const lista = bots.map((b, i) => (i + 1) + '. +' + b.num + ' (' + b.label + ')').join('\n') || '(ninguno en linea)';
+    if (!mentioned) {
       return c.reply([
-        'Primario actual: ' + (chat.primary ? '+' + chat.primary : 'todos'),
+        '   ❀ 𓆩 ' + (require('../lib/deco').sans || ((x)=>x))('setprimary') + ' 𓆪 ❀',
+        'Primario actual: ' + (chat.primary ? ('@' + chat.primary) : 'ninguno (todos)'),
         '',
-        'Bots en linea:',
-        lista,
-        '',
-        'Uso:',
-        c.prefix + 'setprimary @bot',
-        c.prefix + 'setprimary main',
-        c.prefix + 'setprimary 58412...',
-        c.prefix + 'setprimary off',
+        'Uso: ' + c.prefix + 'setprimary @bot',
+        '   ❀',
       ].join('\n'));
     }
-    if (['off', 'none', 'todos', 'all', 'quitar', 'reset', 'ninguno'].includes(a)) {
-      delete chat.primary;
-      db.save();
-      return c.reply('Listo: ahora contestan TODOS los bots de este grupo.');
+    const mn = digits(String(mentioned).split('@')[0]);
+    const target = bots.find((b) => b.num === mn || mn.endsWith(b.num) || b.num.endsWith(mn));
+    if (!target) {
+      return c.reply('Este usuario no es un bot.');
     }
-
-    let target = null;
-    if (mentioned) {
-      const mn = digits(String(mentioned).split('@')[0]);
-      target = bots.find((b) => b.num === mn || mn.endsWith(b.num) || b.num.endsWith(mn));
-      if (!target) return c.reply('Este usuario no es un bot.\nMenciona un bot conectado (principal o sub bot) o usa el numero.');
-    } else if (['main', 'principal'].includes(a)) {
-      target = bots.find((b) => b.label === 'principal');
-    } else {
-      const d = digits(c.args.join(''));
-      target = bots.find((b) => b.num === d) || (d.length <= 2 ? bots[Number(d) - 1] : null);
-      if (!target && d) return c.reply('Este usuario no es un bot.\nNo hay ningun bot en linea con ese numero.');
-    }
-    if (!target) return c.reply('No encontre ese bot en linea. Mira la lista con ' + c.prefix + 'setprimary');
     try { await target.sock.groupMetadata(c.from); }
-    catch { return c.reply('El bot +' + target.num + ' no esta en este grupo. Agregalo y vuelve a intentar.'); }
+    catch { return c.reply('Ese bot no esta en este grupo.'); }
     chat.primary = target.num;
     db.save();
-    return c.reply('Bot primario: +' + target.num + ' (' + target.label + ').\nSolo ese bot contesta aqui. Para todos: ' + c.prefix + 'setprimary off');
+    return c.reply(
+      'Se ha restablecido @' + target.num + ' como bot primario del grupo.\nSolo ese bot responde aqui.',
+      { mentions: [mentioned] }
+    );
   }, ['primary', 'botprincipal', 'primario']),
+
+  mk('logout', 'Cierra la sesion del bot y la desvincula de WhatsApp', '', async (c) => {
+    if (!c.isOwner && !(c.isSub && c.sock.subNumber === c.senderNum)) {
+      return c.reply('Solo el owner (o el dueño del sub bot) puede hacer logout.');
+    }
+    await c.reply('Cerrando sesion y desvinculando dispositivo...');
+    try {
+      if (c.isSub && c.sock.subNumber) {
+        const how = await subbots.remove(c.sock.subNumber);
+        return; // sub se desconecta
+      }
+      // principal
+      try { await c.sock.logout(); } catch (e) { console.error('logout:', e?.message || e); }
+      const fs = require('fs');
+      const path = require('path');
+      const sessionDir = path.join(process.cwd(), 'session');
+      try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch {}
+      await c.reply('Sesion eliminada. Reinicia el bot y vincula de nuevo.');
+      setTimeout(() => process.exit(2), 1500);
+    } catch (e) {
+      return c.reply('Error al cerrar sesion: ' + String(e?.message || e).slice(0, 100));
+    }
+  }, ['cerrarsesion', 'unpair']),
+
 
   mk('subbotmode', 'Activa o apaga que los miembros creen sub bots', 'on|off', (c) => {
     const v = (c.args[0] || '').toLowerCase();
