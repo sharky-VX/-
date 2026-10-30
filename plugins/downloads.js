@@ -130,123 +130,154 @@ async function tiktokFlow(ctx, audioOnly) {
   const link = getLink(ctx);
   const q = getQuery(ctx);
   if (!link && !q) {
-    return ctx.reply(wrap('Dime que buscar o pega un enlace.\nEjemplo: ' + ctx.prefix + 'tt videos de carros', 'tiktok'));
+    return ctx.reply(wrap('Dime que buscar o pega un enlace.\nEjemplo: ' + ctx.prefix + 'tt cosplay nino', 'tiktok'));
   }
   await ctx.react('🔎');
   const fs = require('fs');
   const ytdlp = require('../lib/ytdlp');
 
-  async function dlFromUrl(pageUrl, directUrl) {
-    // 1) yt-dlp (mas fiable con enlaces TikTok)
-    if (pageUrl && ytdlp.valid(pageUrl)) {
+  async function bufFromDirect(url) {
+    if (!url) return null;
+    try {
+      const buf = await U.getBuffer(url, {
+        timeout: 60000,
+        maxContentLength: 55 * 1024 * 1024,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36',
+          Referer: 'https://www.tiktok.com/',
+        },
+      });
+      if (buf && buf.length > 5000) return buf;
+    } catch (e) {
+      console.error('tt direct:', e && e.message ? e.message : e);
+    }
+    return null;
+  }
+
+  async function resolveOne(pageUrl, direct) {
+    // 1) CDN directo (rapido, sin marca)
+    let buf = await bufFromDirect(direct);
+    if (buf) return buf;
+    // 2) tikwm por URL de pagina
+    if (pageUrl) {
       try {
-        const got = await ytdlp.download(pageUrl, { audio: audioOnly, height: 720 });
-        if (got && got.file) {
-          const buf = fs.readFileSync(got.file);
-          try { got.cleanup && got.cleanup(); } catch {}
-          if (buf && buf.length > 2000) return buf;
+        const v = await social.tiktokByUrl(pageUrl);
+        if (v && v.video) {
+          buf = await bufFromDirect(v.video);
+          if (buf) return { buf: buf, meta: v };
         }
       } catch (e) {
-        console.error('tt ytdlp:', e?.message || e);
+        console.error('tt tikwm:', e && e.message ? e.message : e);
       }
     }
-    // 2) URL directa CDN
-    if (directUrl) {
+    // 3) yt-dlp
+    if (pageUrl) {
       try {
-        const buf = await U.getBuffer(directUrl, {
-          timeout: 90000,
-          maxContentLength: 50 * 1024 * 1024,
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            Referer: 'https://www.tiktok.com/',
-            Origin: 'https://www.tiktok.com',
-          },
-        });
-        if (buf && buf.length > 2000) return buf;
+        const got = await ytdlp.download(pageUrl, { audio: audioOnly, height: 480, maxMB: 45, maxDuration: 240 });
+        try {
+          buf = fs.readFileSync(got.file);
+          if (buf && buf.length > 5000) return { buf: buf, meta: { title: pageUrl } };
+        } finally {
+          try { got.cleanup(); } catch (e) {}
+        }
       } catch (e) {
-        console.error('tt cdn:', e?.message || e);
+        console.error('tt ytdlp:', e && e.message ? e.message : e);
       }
     }
     return null;
   }
 
-  // ── Enlace unico ──
   if (link) {
-    let v = null;
-    try { v = await social.tiktokByUrl(link); } catch (e) {
-      console.error('tt byurl:', e?.message || e);
-    }
     await ctx.react('⏳');
-    const buf = await dlFromUrl(link, v && (audioOnly ? (v.audio || v.video) : v.video));
-    if (!buf) return ctx.reply(wrap('No pude descargar ese TikTok. Prueba otro enlace.', 'tiktok'));
+    const got = await resolveOne(link, null);
+    if (!got) return ctx.reply(wrap('No pude descargar ese TikTok.\nPrueba otro enlace o actualiza yt-dlp:\npip install -U yt-dlp', 'tiktok'));
+    const buf = Buffer.isBuffer(got) ? got : got.buf;
+    const v = Buffer.isBuffer(got) ? {} : (got.meta || {});
+    const cap = [
+      '   ❀ 𓆩 ' + sans('tiktok') + ' 𓆪 ❀',
+      '',
+      '  ✦ ' + String(v.title || 'TikTok').slice(0, 100),
+      v.author ? ('  ✦ Autor ── ' + v.author) : '',
+      '  ✦ Sin marca de agua',
+      '',
+      '   ❀',
+    ].filter(Boolean).join('\n');
     if (audioOnly) {
-      const cap = card('tiktok', ['Audio', String(v?.title || '').slice(0, 100)]);
-      await ctx.sock.sendMessage(ctx.from, { audio: buf, mimetype: 'audio/mpeg' }, { quoted: ctx.m }).catch(async () => {
-        await ctx.sock.sendMessage(ctx.from, { document: buf, mimetype: 'audio/mpeg', fileName: 'tiktok.mp3', caption: cap }, { quoted: ctx.m });
-      });
+      await ctx.sock.sendMessage(ctx.from, { audio: buf, mimetype: 'audio/mpeg' }, { quoted: ctx.m });
     } else {
-      const cap = card('tiktok', [
-        String(v?.title || 'TikTok').slice(0, 120),
-        v?.author ? ('Autor ── ' + v.author) : '',
-        v?.plays != null ? ('Vistas ── ' + num(v.plays)) : '',
-      ].filter(Boolean));
       await ctx.sock.sendMessage(ctx.from, { video: buf, caption: cap, mimetype: 'video/mp4' }, { quoted: ctx.m });
     }
     await ctx.react('✅');
     return;
   }
 
-  // ── Busqueda: hasta 4 videos y MANDARLOS ──
+  // Busqueda
   let list = [];
   try {
-    list = await social.tiktokSearch(q, 4);
+    list = await social.tiktokSearch(q, 8);
   } catch (e) {
-    console.error('tt search api:', e?.message || e);
+    console.error('tt search social:', e && e.message ? e.message : e);
   }
   if (!list.length) {
     try {
-      const hits = await ytdlp.search(q + ' site:tiktok.com', 4);
-      list = (hits || []).map((h) => ({ title: h.title, author: h.channel || '', url: h.url, video: null }));
+      const hits = await ytdlp.tiktokSearch(q, 6);
+      list = (hits || []).map(function (h) {
+        return { title: h.title, author: h.channel || '', url: h.url, video: null };
+      });
     } catch (e) {
-      console.error('tt search ytdlp:', e?.message || e);
+      console.error('tt search ytdlp:', e && e.message ? e.message : e);
     }
   }
-  if (!list.length) return ctx.reply(wrap('Sin resultados para: ' + q + '\n\nInstala/actualiza yt-dlp:\npip install -U yt-dlp', 'tiktok'));
+  if (!list.length) {
+    return ctx.reply(wrap('Sin resultados para: *' + q + '*\nPrueba otras palabras o un enlace.', 'tiktok'));
+  }
+
+  // Relevancia
+  const words = String(q).toLowerCase().split(/\s+/).filter(function (w) { return w.length > 2; });
+  list = list
+    .map(function (v) {
+      const hay = (String(v.title || '') + ' ' + String(v.author || '') + ' ' + String(v.user || '')).toLowerCase();
+      let score = 0;
+      for (let i = 0; i < words.length; i++) if (hay.indexOf(words[i]) >= 0) score += 2;
+      return { v: v, score: score };
+    })
+    .sort(function (a, b) { return b.score - a.score; })
+    .map(function (x) { return x.v; });
 
   await ctx.react('⏳');
-  let sent = 0;
-  const titles = [];
-  for (const v of list.slice(0, 4)) {
+  const ok = [];
+  // Secuencial: tikwm limita 1 req/s; paralelo hace que fallen todos
+  for (let i = 0; i < list.length && ok.length < 4; i++) {
+    const v = list[i];
+    let pageUrl = v.url || '';
+    if (!pageUrl && v.user && v.id) pageUrl = 'https://www.tiktok.com/@' + v.user + '/video/' + v.id;
     try {
-      let pageUrl = v.url || '';
-      if (!pageUrl && v.user && v.id) pageUrl = 'https://www.tiktok.com/@' + v.user + '/video/' + v.id;
-      let buf = await dlFromUrl(pageUrl, v.video);
-      if (!buf && pageUrl) {
-        try {
-          const d = await ytdlp.download(pageUrl, { audio: false, height: 720, maxMB: 50, maxDuration: 180 });
-          try { buf = require('fs').readFileSync(d.file); } finally { try { d.cleanup(); } catch {} }
-        } catch (e) { console.error('tt ytdlp item:', e?.message || e); }
-      }
-      if (!buf) continue;
-      titles.push(String(v.title || 'video').slice(0, 50));
-      const cap = card('tiktok', [
-        String(v.title || 'TikTok').slice(0, 100),
-        v.author ? ('Autor ── ' + v.author) : '',
-        'Busqueda ── ' + q,
-        (sent + 1) + ' / ' + Math.min(4, list.length),
-      ].filter(Boolean));
+      const got = await resolveOne(pageUrl, v.video);
+      if (!got) continue;
+      const buf = Buffer.isBuffer(got) ? got : got.buf;
+      const meta = Buffer.isBuffer(got) ? v : Object.assign({}, v, got.meta || {});
+      ok.push({ buf: buf, meta: meta });
+      // enviar YA (mas rapido percibido)
+      const cap = [
+        '   ❀ 𓆩 ' + sans('tiktok') + ' 𓆪 ❀',
+        '',
+        '  ✦ ' + String(meta.title || 'TikTok').slice(0, 110),
+        meta.author ? ('  ✦ Autor    ── ' + meta.author) : '',
+        '  ✦ Busqueda ── ' + q,
+        '  ✦ Video    ── ' + ok.length + ' / 4',
+        '  ✦ Sin marca',
+        '',
+        '   ❀',
+      ].filter(Boolean).join('\n');
       await ctx.sock.sendMessage(ctx.from, { video: buf, caption: cap, mimetype: 'video/mp4' }, { quoted: ctx.m });
-      sent++;
-      await U.sleep(600);
     } catch (e) {
-      console.error('tt send item:', e?.message || e);
+      console.error('tt item:', e && e.message ? e.message : e);
     }
+    if (ok.length < 4 && i < list.length - 1) await U.sleep(900);
   }
-  if (!sent) {
-    return ctx.reply(wrap('Encontre resultados pero no pude descargar los videos.\nPrueba un enlace directo: ' + ctx.prefix + 'tt <url>', 'tiktok'));
-  }
-  if (sent > 1) {
-    await ctx.reply(wrap('Enviados ' + sent + ' videos de: ' + q, 'tiktok'));
+
+  if (!ok.length) {
+    return ctx.reply(wrap('Encontre resultados pero no pude bajar los videos.\nPrueba: ' + ctx.prefix + 'tt <enlace de tiktok>', 'tiktok'));
   }
   await ctx.react('✅');
 }
@@ -282,114 +313,102 @@ async function sendAlbum(ctx, items, caption) {
   const from = ctx.from;
   const quoted = ctx.m;
   const cap = String(caption || '');
+  const bufs = items.map((x) => x.image || x).filter((b) => b && b.length > 500);
+  if (!bufs.length) return false;
 
-  // 1) Album nativo (WhatsApp media group)
+  // 1) Album nativo Baileys (imagenes completas juntas)
   try {
-    const { generateWAMessageFromContent, generateWAMessage, prepareWAMessageMedia } = require('@whiskeysockets/baileys');
-    const { randomBytes } = require('crypto');
-    const imageItems = items.filter((x) => !x.video);
-    const videoItems = items.filter((x) => x.video);
+    const { generateWAMessageFromContent, prepareWAMessageMedia } = require('@whiskeysockets/baileys');
+    const albumMsg = generateWAMessageFromContent(from, {
+      albumMessage: {
+        expectedImageCount: bufs.length,
+        expectedVideoCount: 0,
+      },
+    }, { userJid: sock.user?.id });
+    await sock.relayMessage(from, albumMsg.message, { messageId: albumMsg.key.id });
 
-    if (imageItems.length >= 1 && videoItems.length === 0) {
-      const albumContent = generateWAMessageFromContent(from, {
-        albumMessage: {
-          expectedImageCount: imageItems.length,
-          expectedVideoCount: 0,
+    for (let i = 0; i < bufs.length; i++) {
+      const media = await prepareWAMessageMedia(
+        { image: bufs[i] },
+        { upload: sock.waUploadToServer }
+      );
+      const img = media.imageMessage;
+      if (i === 0 && cap) img.caption = cap;
+      img.contextInfo = {
+        ...(img.contextInfo || {}),
+        messageAssociation: {
+          associationType: 1,
+          parentMessageKey: albumMsg.key,
         },
-      }, {});
-      await sock.relayMessage(from, albumContent.message, { messageId: albumContent.key.id });
-
-      for (let i = 0; i < imageItems.length; i++) {
-        const buf = imageItems[i].image || imageItems[i];
-        const media = await prepareWAMessageMedia({ image: buf }, { upload: sock.waUploadToServer });
-        const imgNode = media.imageMessage;
-        if (i === 0 && cap) imgNode.caption = cap;
-        imgNode.contextInfo = {
-          ...(imgNode.contextInfo || {}),
-          messageAssociation: {
-            associationType: 1,
-            parentMessageKey: albumContent.key,
-          },
-        };
-        const msg = generateWAMessageFromContent(from, { imageMessage: imgNode }, {});
-        await sock.relayMessage(from, msg.message, { messageId: msg.key.id });
-        await U.sleep(200);
-      }
-      return true;
+      };
+      const node = generateWAMessageFromContent(from, { imageMessage: img }, { userJid: sock.user?.id });
+      await sock.relayMessage(from, node.message, { messageId: node.key.id });
     }
-
-    // Videos: intentar prop album
-    if (videoItems.length) {
-      await sock.sendMessage(from, {
-        album: videoItems.map((it, i) => ({
-          video: it.video,
-          ...(i === 0 && cap ? { caption: cap } : {}),
-        })),
-      }, { quoted });
-      return true;
-    }
+    return true;
   } catch (e) {
-    console.error('album nativo:', e?.message || e);
+    console.error('album native:', e && e.message ? e.message : e);
   }
 
-  // 2) Prop album directo
+  // 2) API album (algunas builds de Baileys)
   try {
     await sock.sendMessage(from, {
-      album: items.map((it, i) => {
-        if (it.video) return { video: it.video, ...(i === 0 && cap ? { caption: cap } : {}) };
-        return { image: it.image || it, ...(i === 0 && cap ? { caption: cap } : {}) };
-      }),
+      album: bufs.map((b, i) => (i === 0 ? { image: b, caption: cap } : { image: b })),
     }, { quoted });
     return true;
   } catch (e) {
-    console.error('album prop:', e?.message || e);
+    console.error('album api:', e && e.message ? e.message : e);
   }
 
-  // 3) Collage = UNA sola imagen con todas (no spam)
+  // 3) Envio en rafaga (mismo quoted) — ultimo recurso para no perder imagenes
   try {
-    const bufs = items.map((it) => it.image || it.video || it).filter((b) => Buffer.isBuffer(b));
-    if (!bufs.length) return false;
-    // Si hay videos, manda solo el primero con caption (no 4 sueltos)
-    if (items.some((x) => x.video)) {
-      await sock.sendMessage(from, { video: items[0].video, caption: cap, mimetype: 'video/mp4' }, { quoted });
-      return true;
+    await sock.sendMessage(from, { image: bufs[0], caption: cap }, { quoted });
+    for (let i = 1; i < bufs.length; i++) {
+      await sock.sendMessage(from, { image: bufs[i] }, { quoted });
     }
-    const collage = await makeCollage(bufs);
-    await sock.sendMessage(from, { image: collage, caption: cap }, { quoted });
     return true;
   } catch (e) {
-    console.error('collage:', e?.message || e);
-    return false;
+    console.error('album burst:', e && e.message ? e.message : e);
   }
+  return false;
 }
+
 
 async function imagesFlow(ctx, source) {
   const link = getLink(ctx);
   if (link) return ytFlow(ctx, { audio: false, label: source });
-  const args = [...ctx.args];
+  const args = ctx.args.slice();
   let n = 10;
-  if (/^\d{1,2}$/.test(args[args.length - 1] || '')) n = parseInt(args.pop());
+  if (/^\d{1,2}$/.test(args[args.length - 1] || '')) n = parseInt(args.pop(), 10);
   n = U.clamp(n, 1, 10);
   const q = args.join(' ').trim();
   if (!q) return ctx.reply(wrap('Dime que buscar.\nEjemplo: ' + ctx.prefix + 'pin anime aesthetic', 'pinterest'));
   await ctx.react('🔎');
   let imgs = [];
-  try { imgs = await social.imageSearch(q, n); } catch (e) { console.error('pin search:', e?.message || e); }
+  try { imgs = await social.imageSearch(q, n); } catch (e) { console.error('pin search:', e && e.message ? e.message : e); }
   if (!imgs || !imgs.length) return ctx.reply(wrap('Sin imagenes para: ' + q, 'pinterest'));
-  const cap = card('pinterest', [
-    'Busqueda ── ' + q,
-    'Resultados ── ' + imgs.length + ' imagenes',
-    'Estado ── 1 mensaje (collage)',
-  ]);
-  // SIEMPRE un solo mensaje: collage (no album / no 10 mensajes sueltos)
-  try {
-    const collage = await makeCollage(imgs);
-    await ctx.sock.sendMessage(ctx.from, { image: collage, caption: cap }, { quoted: ctx.m });
-    await ctx.react('✅');
-  } catch (e) {
-    console.error('pin collage:', e?.message || e);
-    return ctx.reply(wrap('No pude armar el collage. Intenta de nuevo.', 'pinterest'));
+
+  const cap = [
+    '   ❀ 𓆩 ' + sans('pinterest') + ' 𓆪 ❀',
+    '',
+    '  ✦ Busqueda   ── ' + q,
+    '  ✦ Resultados ── ' + imgs.length + ' imagenes',
+    '  ✦ Modo       ── album',
+    '',
+    '   ❀',
+  ].join('\n');
+
+  const items = imgs.map(function (buf) { return { image: buf }; });
+  const ok = await sendAlbum(ctx, items, cap);
+  if (!ok) {
+    try {
+      const collage = await makeCollage(imgs);
+      await ctx.sock.sendMessage(ctx.from, { image: collage, caption: cap }, { quoted: ctx.m });
+    } catch (e) {
+      console.error('pin fallback:', e && e.message ? e.message : e);
+      return ctx.reply(wrap('No pude enviar el album.', 'pinterest'));
+    }
   }
+  await ctx.react('✅');
 }
 
 

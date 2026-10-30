@@ -140,89 +140,99 @@ async function tiktokFlow(ctx, audioOnly) {
     if (!url) return null;
     try {
       const buf = await U.getBuffer(url, {
-        timeout: 45000,
-        maxContentLength: 50 * 1024 * 1024,
+        timeout: 60000,
+        maxContentLength: 55 * 1024 * 1024,
         headers: {
-          'User-Agent': 'Mozilla/5.0',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36',
           Referer: 'https://www.tiktok.com/',
-          Origin: 'https://www.tiktok.com',
         },
       });
-      if (buf && buf.length > 8000) return buf;
+      if (buf && buf.length > 5000) return buf;
     } catch (e) {
       console.error('tt direct:', e && e.message ? e.message : e);
     }
     return null;
   }
 
-  async function bufFromPage(pageUrl) {
-    if (!pageUrl) return null;
-    try {
-      const v = await social.tiktokByUrl(pageUrl);
-      if (v && v.video) {
-        const b = await bufFromDirect(v.video);
-        if (b) return { buf: b, meta: v };
-      }
-    } catch (e) {
-      console.error('tt tikwm url:', e && e.message ? e.message : e);
-    }
-    try {
-      const got = await ytdlp.download(pageUrl, { audio: audioOnly, height: 480, maxMB: 40, maxDuration: 180 });
+  async function resolveOne(pageUrl, direct) {
+    // 1) CDN directo (rapido, sin marca)
+    let buf = await bufFromDirect(direct);
+    if (buf) return buf;
+    // 2) tikwm por URL de pagina
+    if (pageUrl) {
       try {
-        const buf = fs.readFileSync(got.file);
-        if (buf && buf.length > 8000) return { buf: buf, meta: { title: pageUrl, author: '' } };
-      } finally {
-        try { got.cleanup(); } catch (e) {}
+        const v = await social.tiktokByUrl(pageUrl);
+        if (v && v.video) {
+          buf = await bufFromDirect(v.video);
+          if (buf) return { buf: buf, meta: v };
+        }
+      } catch (e) {
+        console.error('tt tikwm:', e && e.message ? e.message : e);
       }
-    } catch (e) {
-      console.error('tt ytdlp:', e && e.message ? e.message : e);
+    }
+    // 3) yt-dlp
+    if (pageUrl) {
+      try {
+        const got = await ytdlp.download(pageUrl, { audio: audioOnly, height: 480, maxMB: 45, maxDuration: 240 });
+        try {
+          buf = fs.readFileSync(got.file);
+          if (buf && buf.length > 5000) return { buf: buf, meta: { title: pageUrl } };
+        } finally {
+          try { got.cleanup(); } catch (e) {}
+        }
+      } catch (e) {
+        console.error('tt ytdlp:', e && e.message ? e.message : e);
+      }
     }
     return null;
   }
 
   if (link) {
     await ctx.react('⏳');
-    const got = await bufFromPage(link);
-    if (!got) return ctx.reply(wrap('No pude descargar ese TikTok (prueba otro enlace).', 'tiktok'));
-    const v = got.meta || {};
+    const got = await resolveOne(link, null);
+    if (!got) return ctx.reply(wrap('No pude descargar ese TikTok.\nPrueba otro enlace o actualiza yt-dlp:\npip install -U yt-dlp', 'tiktok'));
+    const buf = Buffer.isBuffer(got) ? got : got.buf;
+    const v = Buffer.isBuffer(got) ? {} : (got.meta || {});
     const cap = [
       '   ❀ 𓆩 ' + sans('tiktok') + ' 𓆪 ❀',
       '',
-      '  ✦ Titulo   ── ' + String(v.title || 'TikTok').slice(0, 100),
-      v.author ? ('  ✦ Autor    ── ' + v.author) : '',
-      v.plays != null ? ('  ✦ Vistas   ── ' + num(v.plays)) : '',
-      v.likes != null ? ('  ✦ Likes    ── ' + num(v.likes)) : '',
-      '  ✦ Calidad  ── HD sin marca',
+      '  ✦ ' + String(v.title || 'TikTok').slice(0, 100),
+      v.author ? ('  ✦ Autor ── ' + v.author) : '',
+      '  ✦ Sin marca de agua',
       '',
       '   ❀',
     ].filter(Boolean).join('\n');
     if (audioOnly) {
-      await ctx.sock.sendMessage(ctx.from, { audio: got.buf, mimetype: 'audio/mpeg', ptt: false }, { quoted: ctx.m });
+      await ctx.sock.sendMessage(ctx.from, { audio: buf, mimetype: 'audio/mpeg' }, { quoted: ctx.m });
     } else {
-      await ctx.sock.sendMessage(ctx.from, { video: got.buf, caption: cap, mimetype: 'video/mp4' }, { quoted: ctx.m });
+      await ctx.sock.sendMessage(ctx.from, { video: buf, caption: cap, mimetype: 'video/mp4' }, { quoted: ctx.m });
     }
     await ctx.react('✅');
     return;
   }
 
+  // Busqueda
   let list = [];
   try {
-    list = await social.tiktokSearch(q, 10);
+    list = await social.tiktokSearch(q, 8);
   } catch (e) {
-    console.error('tt search:', e && e.message ? e.message : e);
+    console.error('tt search social:', e && e.message ? e.message : e);
   }
   if (!list.length) {
     try {
-      const hits = await ytdlp.search(q, 6, 'tiktoksearch');
+      const hits = await ytdlp.tiktokSearch(q, 6);
       list = (hits || []).map(function (h) {
         return { title: h.title, author: h.channel || '', url: h.url, video: null };
       });
     } catch (e) {
-      console.error('tt search2:', e && e.message ? e.message : e);
+      console.error('tt search ytdlp:', e && e.message ? e.message : e);
     }
   }
-  if (!list.length) return ctx.reply(wrap('Sin resultados para: *' + q + '*', 'tiktok'));
+  if (!list.length) {
+    return ctx.reply(wrap('Sin resultados para: *' + q + '*\nPrueba otras palabras o un enlace.', 'tiktok'));
+  }
 
+  // Relevancia
   const words = String(q).toLowerCase().split(/\s+/).filter(function (w) { return w.length > 2; });
   list = list
     .map(function (v) {
@@ -235,48 +245,39 @@ async function tiktokFlow(ctx, audioOnly) {
     .map(function (x) { return x.v; });
 
   await ctx.react('⏳');
-  const target = list.slice(0, 8);
-  const jobs = target.map(async function (v) {
+  const ok = [];
+  // Secuencial: tikwm limita 1 req/s; paralelo hace que fallen todos
+  for (let i = 0; i < list.length && ok.length < 4; i++) {
+    const v = list[i];
     let pageUrl = v.url || '';
     if (!pageUrl && v.user && v.id) pageUrl = 'https://www.tiktok.com/@' + v.user + '/video/' + v.id;
-    let buf = await bufFromDirect(v.video);
-    let meta = v;
-    if (!buf && pageUrl) {
-      const got = await bufFromPage(pageUrl);
-      if (got) {
-        buf = got.buf;
-        meta = Object.assign({}, v, got.meta || {});
-      }
+    try {
+      const got = await resolveOne(pageUrl, v.video);
+      if (!got) continue;
+      const buf = Buffer.isBuffer(got) ? got : got.buf;
+      const meta = Buffer.isBuffer(got) ? v : Object.assign({}, v, got.meta || {});
+      ok.push({ buf: buf, meta: meta });
+      // enviar YA (mas rapido percibido)
+      const cap = [
+        '   ❀ 𓆩 ' + sans('tiktok') + ' 𓆪 ❀',
+        '',
+        '  ✦ ' + String(meta.title || 'TikTok').slice(0, 110),
+        meta.author ? ('  ✦ Autor    ── ' + meta.author) : '',
+        '  ✦ Busqueda ── ' + q,
+        '  ✦ Video    ── ' + ok.length + ' / 4',
+        '  ✦ Sin marca',
+        '',
+        '   ❀',
+      ].filter(Boolean).join('\n');
+      await ctx.sock.sendMessage(ctx.from, { video: buf, caption: cap, mimetype: 'video/mp4' }, { quoted: ctx.m });
+    } catch (e) {
+      console.error('tt item:', e && e.message ? e.message : e);
     }
-    if (!buf) return null;
-    return { buf: buf, meta: meta };
-  });
-
-  const settled = await Promise.all(jobs);
-  const ok = settled.filter(Boolean).slice(0, 4);
-  if (!ok.length) {
-    return ctx.reply(wrap('Encontre resultados pero no pude bajar los videos.\nPrueba enlace: ' + ctx.prefix + 'tt <url>', 'tiktok'));
+    if (ok.length < 4 && i < list.length - 1) await U.sleep(900);
   }
 
-  for (let i = 0; i < ok.length; i++) {
-    const item = ok[i];
-    const v = item.meta;
-    const cap = [
-      '   ❀ 𓆩 ' + sans('tiktok') + ' 𓆪 ❀',
-      '',
-      '  ✦ ' + String(v.title || 'TikTok').slice(0, 110),
-      v.author ? ('  ✦ Autor    ── ' + v.author) : '',
-      '  ✦ Busqueda ── ' + q,
-      '  ✦ Video    ── ' + (i + 1) + ' / ' + ok.length,
-      '  ✦ Calidad  ── HD sin marca',
-      '',
-      '   ❀',
-    ].filter(Boolean).join('\n');
-    try {
-      await ctx.sock.sendMessage(ctx.from, { video: item.buf, caption: cap, mimetype: 'video/mp4' }, { quoted: ctx.m });
-    } catch (e) {
-      console.error('tt send:', e && e.message ? e.message : e);
-    }
+  if (!ok.length) {
+    return ctx.reply(wrap('Encontre resultados pero no pude bajar los videos.\nPrueba: ' + ctx.prefix + 'tt <enlace de tiktok>', 'tiktok'));
   }
   await ctx.react('✅');
 }

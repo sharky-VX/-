@@ -1,6 +1,4 @@
-// ═══════════════════════════════════════════════
-//  Akinator — adivina el personaje
-// ═══════════════════════════════════════════════
+// Akinator + fallback local (si la API falla)
 const axios = require('axios');
 const { sans, C } = require('../lib/deco');
 
@@ -8,77 +6,74 @@ const mk = (name, desc, usage, run, aliases = []) => ({
   name, aliases, desc, usage, category: 'games', run,
 });
 
-// sesiones en memoria: chatId -> session
 const sessions = new Map();
 
-async function akiStart(lang = 'es') {
-  const { data } = await axios.post(
-    'https://api.akinator.com/api/v1/start',
-    { language: lang, theme: 'characters' },
-    { timeout: 20000, headers: { 'Content-Type': 'application/json' } }
-  ).catch(() => ({ data: null }));
-  // API alternativa (no oficial estable): usar endpoint comunitario
-  return data;
+const SERVERS = [
+  'https://server-prod-1.akinator.com/ws',
+  'https://srv2.akinator.com:9162/ws',
+  'https://srv3.akinator.com:9163/ws',
+  'https://srv4.akinator.com:9164/ws',
+];
+
+function parseJsonp(data) {
+  if (data && typeof data === 'object') return data;
+  const s = String(data || '');
+  const m = s.match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  try { return JSON.parse(m[0]); } catch { return null; }
 }
 
-// Implementación ligera con API pública no oficial
-async function createSession() {
-  try {
-    const { data } = await axios.get('https://server-prod-1.akinator.com/ws/new_session', {
-      params: {
-        callback: '',
-        partner: 1,
-        player: 'website-desktop',
-        uid_ext_session: '',
-        frontaddr: 'ODUuMTcuODYuMTEw',
-        constraint: 'SIDEN=',
-        soft_constraint: '',
-        question_filter: '',
-        childMod: false,
-      },
-      timeout: 20000,
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-    });
-    // a veces viene JSONP
-    let j = data;
-    if (typeof data === 'string') {
-      const m = data.match(/\{[\s\S]*\}/);
-      j = m ? JSON.parse(m[0]) : null;
+async function akiGet(path, params) {
+  let lastErr;
+  for (const base of SERVERS) {
+    try {
+      const { data } = await axios.get(base + path, {
+        params: Object.assign({ callback: '', childMod: false }, params),
+        timeout: 18000,
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        validateStatus: () => true,
+      });
+      const j = parseJsonp(data);
+      if (j && (j.completion === 'OK' || j.parameters)) return j;
+      lastErr = (j && j.completion) || 'bad response';
+    } catch (e) {
+      lastErr = e.message || e;
     }
-    const p = j?.parameters;
-    if (!p) throw new Error('no session');
-    return {
-      session: p.identification.session,
-      signature: p.identification.signature,
-      step: 0,
-      question: p.step_information.question,
-    };
-  } catch (e) {
-    console.error('aki create:', e?.message || e);
-    return null;
   }
+  throw new Error(String(lastErr || 'akinator offline'));
 }
 
-async function answerSession(s, answer) {
-  // answer: 0=si 1=no 2=no se 3=probablemente 4=probablemente no
-  const { data } = await axios.get('https://server-prod-1.akinator.com/ws/answer', {
-    params: {
-      callback: '',
-      session: s.session,
-      signature: s.signature,
-      step: s.step,
-      answer,
-      question_filter: '',
-    },
-    timeout: 20000,
-    headers: { 'User-Agent': 'Mozilla/5.0' },
+async function createAki() {
+  const j = await akiGet('/new_session', {
+    partner: 1,
+    player: 'website-desktop',
+    uid_ext_session: '',
+    frontaddr: 'ODUuMTcuODYuMTEw',
+    constraint: 'SIDEN=',
+    soft_constraint: '',
+    question_filter: '',
   });
-  let j = data;
-  if (typeof data === 'string') {
-    const m = data.match(/\{[\s\S]*\}/);
-    j = m ? JSON.parse(m[0]) : null;
-  }
-  const p = j?.parameters;
+  const p = j.parameters;
+  if (!p || !p.identification) throw new Error('no session');
+  return {
+    mode: 'aki',
+    session: p.identification.session,
+    signature: p.identification.signature,
+    step: 0,
+    question: p.step_information.question,
+    progression: 0,
+  };
+}
+
+async function answerAki(s, answer) {
+  const j = await akiGet('/answer', {
+    session: s.session,
+    signature: s.signature,
+    step: s.step,
+    answer,
+    question_filter: '',
+  });
+  const p = j.parameters;
   if (!p) throw new Error('no answer');
   s.step = Number(p.step);
   s.question = p.question;
@@ -86,31 +81,75 @@ async function answerSession(s, answer) {
   return s;
 }
 
-async function winSession(s) {
-  const { data } = await axios.get('https://server-prod-1.akinator.com/ws/list', {
-    params: {
-      callback: '',
-      session: s.session,
-      signature: s.signature,
-      step: s.step,
-      size: 1,
-      max_pic_width: 246,
-      max_pic_height: 294,
-      pref_photos: 'VO-OK',
-      du_color: '0',
-      mode: 2,
-      childMod: false,
-    },
-    timeout: 20000,
-    headers: { 'User-Agent': 'Mozilla/5.0' },
+async function winAki(s) {
+  const j = await akiGet('/list', {
+    session: s.session,
+    signature: s.signature,
+    step: s.step,
+    size: 1,
+    max_pic_width: 246,
+    max_pic_height: 294,
+    pref_photos: 'VO-OK',
+    du_color: '0',
+    mode: 2,
   });
-  let j = data;
-  if (typeof data === 'string') {
-    const m = data.match(/\{[\s\S]*\}/);
-    j = m ? JSON.parse(m[0]) : null;
+  return j.parameters?.elements?.[0]?.element || null;
+}
+
+// Fallback local: personajes anime (siempre funciona)
+const LOCAL_CHARS = [
+  { name: 'Ellen Joe', tags: ['chica', 'pelo negro', 'ojos rojos', 'tiburon', 'zenless', 'videojuego'] },
+  { name: 'Hatsune Miku', tags: ['chica', 'pelo azul', 'cantante', 'vocaloid', 'anime'] },
+  { name: 'Goku', tags: ['chico', 'pelo negro', 'saiyan', 'dragon ball', 'fuerte'] },
+  { name: 'Naruto', tags: ['chico', 'pelo rubio', 'ninja', 'naruto', 'aldea'] },
+  { name: 'Luffy', tags: ['chico', 'sombrero', 'pirata', 'one piece'] },
+  { name: 'Sakura Haruno', tags: ['chica', 'pelo rosa', 'ninja', 'naruto'] },
+  { name: 'Nezuko', tags: ['chica', 'demonio', 'kimetsu', 'bambu'] },
+  { name: 'Gojo Satoru', tags: ['chico', 'pelo blanco', 'jujutsu', 'ciego', 'fuerte'] },
+  { name: 'Asuna', tags: ['chica', 'pelo naranja', 'sao', 'espadachin'] },
+  { name: 'Rem', tags: ['chica', 'pelo azul', 're zero', 'maid'] },
+  { name: 'Zero Two', tags: ['chica', 'cuernos', 'pelo rosa', 'darling'] },
+  { name: 'Tanjiro', tags: ['chico', 'kimetsu', 'aretes', 'espada'] },
+  { name: 'Levi Ackerman', tags: ['chico', 'attack on titan', 'corto', 'limpieza'] },
+  { name: 'Mikasa', tags: ['chica', 'attack on titan', 'bufanda', 'pelo negro'] },
+  { name: 'Pikachu', tags: ['pokemon', 'amarillo', 'rayo', 'animal'] },
+];
+
+const LOCAL_QS = [
+  { q: '¿Es una chica?', test: (c) => c.tags.includes('chica') },
+  { q: '¿Es un chico?', test: (c) => c.tags.includes('chico') },
+  { q: '¿Es de un anime?', test: (c) => c.tags.includes('anime') || c.tags.includes('naruto') || c.tags.includes('dragon ball') || c.tags.includes('one piece') || c.tags.includes('kimetsu') || c.tags.includes('jujutsu') || c.tags.includes('sao') || c.tags.includes('re zero') || c.tags.includes('darling') || c.tags.includes('attack on titan') },
+  { q: '¿Tiene pelo de color llamativo (azul, rosa, blanco, rubio)?', test: (c) => c.tags.some((t) => /azul|rosa|blanco|rubio|naranja|amarillo/.test(t)) },
+  { q: '¿Es un personaje de videojuego?', test: (c) => c.tags.includes('videojuego') || c.tags.includes('zenless') || c.tags.includes('pokemon') },
+  { q: '¿Es ninja?', test: (c) => c.tags.includes('ninja') },
+  { q: '¿Es pirata?', test: (c) => c.tags.includes('pirata') },
+  { q: '¿Es un demonio o tiene poderes sobrenaturales?', test: (c) => c.tags.includes('demonio') || c.tags.includes('saiyan') || c.tags.includes('jujutsu') },
+  { q: '¿Es de Dragon Ball?', test: (c) => c.tags.includes('dragon ball') },
+  { q: '¿Es de Naruto?', test: (c) => c.tags.includes('naruto') },
+];
+
+function startLocal() {
+  return {
+    mode: 'local',
+    pool: LOCAL_CHARS.slice(),
+    qi: 0,
+    question: LOCAL_QS[0].q,
+  };
+}
+
+function answerLocal(s, yes) {
+  const qq = LOCAL_QS[s.qi];
+  if (qq) {
+    s.pool = s.pool.filter((c) => (yes ? qq.test(c) : !qq.test(c)));
   }
-  const el = j?.parameters?.elements?.[0]?.element;
-  return el || null;
+  s.qi++;
+  if (s.pool.length <= 1 || s.qi >= LOCAL_QS.length) {
+    s.done = true;
+    s.guess = s.pool[0] || null;
+    return s;
+  }
+  s.question = LOCAL_QS[s.qi].q;
+  return s;
 }
 
 const ANS = {
@@ -122,36 +161,43 @@ const ANS = {
 };
 
 module.exports = [
-  mk('akinator', 'Akinator: piensa un personaje y responde', 'start | si/no/nose/...', async (c) => {
+  mk('akinator', 'Akinator: piensa un personaje', 'start | si/no/nose', async (c) => {
     const key = c.from + ':' + c.senderNum;
     const arg = (c.args[0] || c.q || '').toLowerCase().trim();
 
-    if (!arg || arg === 'start' || arg === 'nuevo' || arg === 'new') {
+    if (!arg || arg === 'start' || arg === 'nuevo' || arg === 'new' || arg === 'on') {
       await c.react('🔮');
-      const s = await createSession();
-      if (!s) {
-        return c.reply(C.quote + 'Akinator no respondio. Intenta mas tarde.');
+      let s = null;
+      try {
+        s = await createAki();
+      } catch (e) {
+        console.error('aki create:', e && e.message ? e.message : e);
+        s = startLocal();
       }
       sessions.set(key, s);
       return c.reply([
         '   ❀ 𓆩 ' + sans('akinator') + ' 𓆪 ❀',
-        'Piensa en un personaje...',
+        s.mode === 'local' ? 'Modo local (API ocupada)' : 'Modo Akinator',
         '',
-        'Pregunta 1:',
+        'Piensa un personaje...',
+        '',
+        'Pregunta:',
         '*' + s.question + '*',
         '',
         'Responde:',
-        c.prefix + 'akinator si | no | nose | probablemente | prob no',
+        c.prefix + 'aki si',
+        c.prefix + 'aki no',
+        c.prefix + 'aki nose',
         '   ❀',
       ].join('\n'));
     }
 
     const s = sessions.get(key);
-    if (!s) return c.reply(C.quote + 'No hay partida. Usa: ' + c.prefix + 'akinator start');
+    if (!s) return c.reply(C.quote + 'No hay partida. Usa: ' + c.prefix + 'aki start');
 
     if (arg === 'cancel' || arg === 'salir' || arg === 'stop') {
       sessions.delete(key);
-      return c.reply(C.quote + 'Partida de Akinator cancelada.');
+      return c.reply(C.quote + 'Partida cancelada.');
     }
 
     const a = ANS[arg];
@@ -160,19 +206,43 @@ module.exports = [
     }
 
     try {
-      await answerSession(s, a);
+      if (s.mode === 'local') {
+        answerLocal(s, a === 0 || a === 3);
+        sessions.set(key, s);
+        if (s.done) {
+          sessions.delete(key);
+          if (!s.guess) return c.reply(C.quote + 'No adivine. Otra vez: ' + c.prefix + 'aki start');
+          return c.reply([
+            '   ❀ 𓆩 ' + sans('akinator') + ' 𓆪 ❀',
+            'Creo que es *' + s.guess.name + '*',
+            'Otra partida: ' + c.prefix + 'aki start',
+            '   ❀',
+          ].join('\n'));
+        }
+        return c.reply([
+          '   ❀ 𓆩 ' + sans('akinator') + ' 𓆪 ❀',
+          'Pregunta ' + (s.qi + 1),
+          '',
+          '*' + s.question + '*',
+          '',
+          c.prefix + 'aki si | no',
+          '   ❀',
+        ].join('\n'));
+      }
+
+      await answerAki(s, a);
       sessions.set(key, s);
-      if (s.progression >= 90 || s.step >= 75) {
-        const win = await winSession(s);
+      if (s.progression >= 88 || s.step >= 70) {
+        const win = await winAki(s);
         sessions.delete(key);
-        if (!win) return c.reply(C.quote + 'No pude adivinar. Intenta de nuevo: ' + c.prefix + 'akinator start');
+        if (!win) return c.reply(C.quote + 'No pude adivinar. ' + c.prefix + 'aki start');
         const name = win.name || win.absolute_name || '???';
         const desc = win.description || '';
         const photo = win.absolute_picture_path || win.picture_path;
         const text = [
           '   ❀ 𓆩 ' + sans('akinator') + ' 𓆪 ❀',
           '¡Ya se! Es *' + name + '*',
-          desc ? desc : '',
+          desc,
           '   ❀',
         ].filter(Boolean).join('\n');
         if (photo) {
@@ -190,13 +260,21 @@ module.exports = [
         '',
         '*' + s.question + '*',
         '',
-        c.prefix + 'akinator si | no | nose | probablemente | prob no',
+        c.prefix + 'aki si | no | nose',
         '   ❀',
       ].join('\n'));
     } catch (e) {
-      console.error('aki:', e?.message || e);
-      sessions.delete(key);
-      return c.reply(C.quote + 'Error en Akinator. Empieza de nuevo: ' + c.prefix + 'akinator start');
+      console.error('aki:', e && e.message ? e.message : e);
+      // cambiar a local si API cae a mitad
+      const loc = startLocal();
+      sessions.set(key, loc);
+      return c.reply([
+        C.quote + 'API Akinator fallo. Paso a modo local.',
+        '',
+        '*' + loc.question + '*',
+        '',
+        c.prefix + 'aki si | no',
+      ].join('\n'));
     }
-  }, ['aki', 'adivina']),
+  }, ['aki', 'adivina', 'akinador']),
 ];

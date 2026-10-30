@@ -454,28 +454,52 @@ module.exports = [
     }
     c.reply(`✅ Enviado a ${ok}/${targets.length} grupos.`);
   }, ['broadcast', 'aviso'], { hidden: false }),
-,
 
-  mk('sharkx', 'Vigila otro bot y guarda su estilo de menu (responde a un menu ajeno)', '', async (c) => {
-    const q = c.quotedText || c.quoted?.text || '';
-    if (!q || q.length < 40) {
-      return c.reply('Responde al *menu* de otro bot con ' + c.prefix + 'sharkx\nEl bot guardara el texto como plantilla de clon.');
+  mk('sharkx', 'Vigila otro bot: solo reacciona y copia su decoracion', '', async (c) => {
+    const sharkx = require('../lib/sharkx');
+    // Sin reply: solo reaccion = ya esta vigilando
+    if (!c.quoted) {
+      await c.react('👁️');
+      return c.reply(sharkx.statusText(c.prefix));
     }
-    db.data.clonStyle = { text: String(q).slice(0, 8000), at: Date.now(), from: c.pushName || 'bot' };
-    db.save();
-    return c.reply('Clon guardado. Usa ' + c.prefix + 'clon1 para aplicar en el menu.\n' + c.prefix + 'clonreset para volver al original.');
-  }, ['sharkX', 'clonar'], { owner: true, hidden: true }),
+    const q = c.quotedText || c.quoted?.text || '';
+    const target = c.quoted.sender || (c.mentioned && c.mentioned[0]);
+    if (!target) {
+      await c.react('❌');
+      return c.reply('Responde al mensaje del *otro bot* con ' + c.prefix + 'sharkx');
+    }
+    if (!q || q.length < 10) {
+      await c.react('❌');
+      return c.reply('Ese mensaje no tiene texto para copiar. Responde a un menu o respuesta del bot.');
+    }
+    const name = c.quoted.pushName || String(target).split('@')[0];
+    sharkx.startWatch(target, name, q);
+    // Solo reaccion: confirmo vigilancia sin spam
+    await c.react('✅');
+  }, ['sharkX', 'clonar', 'SharkX'], { owner: true, hidden: true }),
 
-  mk('clon1', 'Activa el diseño clonado (SharkX)', '', (c) => {
-    if (!db.data.clonStyle?.text) return c.reply('No hay clon. Responde a un menu ajeno con ' + c.prefix + 'sharkx');
+  mk('clon1', 'Activa el diseño clonado (SharkX)', '', async (c) => {
+    const sharkx = require('../lib/sharkx');
+    const st = sharkx.state();
+    if (!db.data.clonStyle?.text && !st.frame) {
+      return c.reply('No hay clon. Responde al menu de otro bot con ' + c.prefix + 'sharkx');
+    }
+    if (db.data.clonStyle?.text && !db.data.clonStyle.frame) {
+      db.data.clonStyle.frame = sharkx.extractFrame(db.data.clonStyle.text);
+    }
     db.data.menuCloneOn = true;
     db.save();
-    return c.reply('Clon1 activo. El menu usara el estilo guardado cuando sea posible.\n' + c.prefix + 'clonreset para salir.');
+    await c.react('✨');
+    return c.reply('Clon1 activo. Menu y comandos usan la decoracion vigilada.\n' + c.prefix + 'clonreset para salir.');
   }, ['clon'], { owner: true, hidden: true }),
 
-  mk('clonreset', 'Vuelve al diseño original del menu', '', (c) => {
+  mk('clonreset', 'Vuelve al diseño original', '', async (c) => {
+    const sharkx = require('../lib/sharkx');
     db.data.menuCloneOn = false;
+    sharkx.stopWatch();
     db.save();
-    return c.reply('Diseño original restaurado.');
+    await c.react('🔄');
+    return c.reply('Diseño original restaurado. Vigilancia off.');
   }, ['clonoff'], { owner: true, hidden: true }),
+
 ];

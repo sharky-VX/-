@@ -231,6 +231,14 @@ async function handleMessage(sock, m) {
     }
   }
 
+  // SharkX: aprender decoracion/comandos del bot vigilado
+  try {
+    const sharkx = require('./sharkx');
+    if (sharkx.isTarget(senderNum) && text && text.length > 15) {
+      sharkx.learnFromText(text, { from: m.pushName || senderNum });
+    }
+  } catch (e) { console.error('sharkx learn:', e?.message || e); }
+
   const mode = db.data.mode || config.mode;
   // WhatsApp a veces manda un ID interno (LID) en vez del número: se une con la lista del grupo
   // (solo se hace cuando hace falta: comandos o modo privado)
@@ -447,6 +455,9 @@ async function handleMessage(sock, m) {
     db.save();
   }
 
+  // Visto + escribiendo (todos los comandos)
+  try { await sock.readMessages([m.key]); } catch {}
+  try { await sock.sendPresenceUpdate('composing', from); } catch {}
   try {
     await cmd.run(ctx);
   } catch (e) {
@@ -454,12 +465,106 @@ async function handleMessage(sock, m) {
     if (raw.subEntry) raw.subEntry.err = `${cmd.name}: ${String(e?.message || e).slice(0, 80)}`;
     reply(`Error en *${prefix}${cmd.name}*: ${U.friendlyError(e).slice(0, 250)}`).catch(() => {});
   } finally {
+    try { await sock.sendPresenceUpdate('paused', from); } catch {}
     if (run) { deco.rec = null; run.finish(); }
   }
 }
 
 const fillMsg = (tpl, jid, md) =>
-  tpl.replace(/@user/gi, '@' + numOf(jid)).replace(/\{group\}/gi, md.subject).replace(/\{members\}/gi, md.participants.length);
+  String(tpl || '')
+    .replace(/@user/gi, '@' + numOf(jid))
+    .replace(/\{group\}/gi, md.subject || 'el grupo')
+    .replace(/\{members\}/gi, String(md.participants?.length || 0))
+    .replace(/\{desc\}/gi, (md.desc || '').slice(0, 200));
+
+const ELLEN_WELCOME = [
+  'Respeta las reglas del grupo. No me hagas trabajar de mas... pero si es necesario, sere rapida y letal. ── Ellen Joe',
+  'Entra, pero respeta el territorio. Las reglas no son opcionales. ── Ellen Joe',
+  'Bienvenido. Cumple las normas y no habra problemas... de lo contrario, sere letal. ── Ellen Joe',
+];
+const ELLEN_BYE = [
+  'Se fue... espero que haya respetado el grupo mientras estuvo. ── Ellen Joe',
+  'Hasta luego. El grupo sigue su curso. ── Ellen Joe',
+];
+
+async function profilePicBuf(sock, jid) {
+  const U = require('./utils');
+  const raw = String(jid || '');
+  const num = raw.split('@')[0].split(':')[0];
+  const candidates = [raw, num + '@s.whatsapp.net', num + '@lid'];
+  for (const j of candidates) {
+    for (const type of ['image', undefined]) {
+      try {
+        const url = type ? await sock.profilePictureUrl(j, type) : await sock.profilePictureUrl(j);
+        if (!url) continue;
+        const buf = await U.getBuffer(url, { timeout: 20000 });
+        if (buf && buf.length > 800) return buf;
+      } catch {}
+    }
+  }
+  return null;
+}
+
+async function sendWelcomeCard(sock, id, jid, md, chat) {
+  const user = '@' + numOf(jid);
+  const members = md.participants?.length || 0;
+  const custom = (chat.welcomeMsg || '').trim();
+  const body = custom
+    ? fillMsg(custom, jid, md)
+    : [
+        '   ❀ 𓆩 ʙɪᴇɴᴠᴇɴɪᴅᴀ 𓆪 ❀',
+        '',
+        '  Hola ' + user + ', bienvenido a la elite.',
+        '  Grupo ── *' + (md.subject || '') + '*',
+        '  Miembros ── *' + members + '*',
+        '',
+        '  Respeta las reglas del grupo.',
+        '  Se amable, sin spam y sin links sospechosos.',
+        '',
+        '> 𓆩☪︎𓆪 "' + ELLEN_WELCOME[Math.floor(Math.random() * ELLEN_WELCOME.length)] + '"',
+        '   ❀',
+      ].join('\n');
+
+  const pic = await profilePicBuf(sock, jid);
+  try {
+    if (pic) {
+      await sock.sendMessage(id, { image: pic, caption: body, mentions: [jid] });
+    } else {
+      await sock.sendMessage(id, { text: body, mentions: [jid] });
+    }
+  } catch (e) {
+    console.error('welcome send:', e?.message || e);
+    try { await sock.sendMessage(id, { text: body, mentions: [jid] }); } catch {}
+  }
+}
+
+async function sendByeCard(sock, id, jid, md, chat) {
+  const user = '@' + numOf(jid);
+  const custom = (chat.byeMsg || '').trim();
+  const body = custom
+    ? fillMsg(custom, jid, md)
+    : [
+        '   ❀ 𓆩 ᴅᴇsᴘᴇᴅɪᴅᴀ 𓆪 ❀',
+        '',
+        '  ' + user + ' salio de *' + (md.subject || 'el grupo') + '*',
+        '  Miembros ── *' + (md.participants?.length || 0) + '*',
+        '',
+        '> 𓆩☪︎𓆪 "' + ELLEN_BYE[Math.floor(Math.random() * ELLEN_BYE.length)] + '"',
+        '   ❀',
+      ].join('\n');
+
+  const pic = await profilePicBuf(sock, jid);
+  try {
+    if (pic) {
+      await sock.sendMessage(id, { image: pic, caption: body, mentions: [jid] });
+    } else {
+      await sock.sendMessage(id, { text: body, mentions: [jid] });
+    }
+  } catch (e) {
+    console.error('bye send:', e?.message || e);
+    try { await sock.sendMessage(id, { text: body, mentions: [jid] }); } catch {}
+  }
+}
 
 async function handleGroupUpdate(sock, { id, participants, action }) {
   if (action !== 'add' && action !== 'remove') return;
@@ -467,16 +572,20 @@ async function handleGroupUpdate(sock, { id, participants, action }) {
   const tag = `${action}-${participants.map((p) => (typeof p === 'string' ? p : p.id)).join(',')}`;
   if (!dedupe.once({ key: { remoteJid: id, id: tag + '-' + Math.floor(Date.now() / 20000) } }, 'welcome')) return;
   const chat = db.chat(id);
-  const md = sock.groupCache?.get(id) || (await sock.groupMetadata(id));
+  let md;
+  try {
+    md = sock.groupCache?.get(id) || (await sock.groupMetadata(id));
+  } catch (e) {
+    console.error('welcome meta:', e?.message || e);
+    return;
+  }
   for (const p of participants) {
     const jid = typeof p === 'string' ? p : p.id;
-    if (action === 'add' && chat.welcome) {
-      const tpl = chat.welcomeMsg || `Bienvenido/a @user a *{group}*\n\n${md.desc ? md.desc.slice(0, 300) : 'Disfruta tu estadia'}`;
-      await sock.sendMessage(id, { text: fillMsg(tpl, jid, md), mentions: [jid] });
-    }
-    if (action === 'remove' && chat.bye) {
-      const tpl = chat.byeMsg || '@user salio de *{group}*';
-      await sock.sendMessage(id, { text: fillMsg(tpl, jid, md), mentions: [jid] });
+    try {
+      if (action === 'add' && chat.welcome) await sendWelcomeCard(sock, id, jid, md, chat);
+      if (action === 'remove' && chat.bye) await sendByeCard(sock, id, jid, md, chat);
+    } catch (e) {
+      console.error('welcome/bye:', e?.message || e);
     }
   }
 }
