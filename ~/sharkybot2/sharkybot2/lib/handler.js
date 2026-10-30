@@ -447,6 +447,9 @@ async function handleMessage(sock, m) {
     db.save();
   }
 
+  // Visto + escribiendo (todos los comandos)
+  try { await sock.readMessages([m.key]); } catch {}
+  try { await sock.sendPresenceUpdate('composing', from); } catch {}
   try {
     await cmd.run(ctx);
   } catch (e) {
@@ -454,6 +457,7 @@ async function handleMessage(sock, m) {
     if (raw.subEntry) raw.subEntry.err = `${cmd.name}: ${String(e?.message || e).slice(0, 80)}`;
     reply(`Error en *${prefix}${cmd.name}*: ${U.friendlyError(e).slice(0, 250)}`).catch(() => {});
   } finally {
+    try { await sock.sendPresenceUpdate('paused', from); } catch {}
     if (run) { deco.rec = null; run.finish(); }
   }
 }
@@ -477,21 +481,18 @@ const ELLEN_BYE = [
 
 async function profilePicBuf(sock, jid) {
   const U = require('./utils');
-  const candidates = [];
   const raw = String(jid || '');
-  candidates.push(raw);
-  if (raw.includes('@')) {
-    const num = raw.split('@')[0].split(':')[0];
-    candidates.push(num + '@s.whatsapp.net');
-    candidates.push(num + '@lid');
-  }
+  const num = raw.split('@')[0].split(':')[0];
+  const candidates = [raw, num + '@s.whatsapp.net', num + '@lid'];
   for (const j of candidates) {
-    try {
-      const url = await sock.profilePictureUrl(j, 'image');
-      if (!url) continue;
-      const buf = await U.getBuffer(url, { timeout: 15000 });
-      if (buf && buf.length > 500) return buf;
-    } catch {}
+    for (const type of ['image', undefined]) {
+      try {
+        const url = type ? await sock.profilePictureUrl(j, type) : await sock.profilePictureUrl(j);
+        if (!url) continue;
+        const buf = await U.getBuffer(url, { timeout: 20000 });
+        if (buf && buf.length > 800) return buf;
+      } catch {}
+    }
   }
   return null;
 }

@@ -167,7 +167,7 @@ async function tiktokFlow(ctx, audioOnly) {
       console.error('tt tikwm url:', e && e.message ? e.message : e);
     }
     try {
-      const got = await ytdlp.download(pageUrl, { audio: audioOnly, height: 1080, maxMB: 45, maxDuration: 180 });
+      const got = await ytdlp.download(pageUrl, { audio: audioOnly, height: 480, maxMB: 40, maxDuration: 180 });
       try {
         const buf = fs.readFileSync(got.file);
         if (buf && buf.length > 8000) return { buf: buf, meta: { title: pageUrl, author: '' } };
@@ -312,86 +312,65 @@ async function sendAlbum(ctx, items, caption) {
   const from = ctx.from;
   const quoted = ctx.m;
   const cap = String(caption || '');
+  const bufs = items.map((x) => x.image || x).filter((b) => b && b.length > 500);
+  if (!bufs.length) return false;
 
-  // 1) Album nativo (WhatsApp media group)
+  // 1) Album nativo Baileys (imagenes completas juntas)
   try {
-    const { generateWAMessageFromContent, generateWAMessage, prepareWAMessageMedia } = require('@whiskeysockets/baileys');
-    const { randomBytes } = require('crypto');
-    const imageItems = items.filter((x) => !x.video);
-    const videoItems = items.filter((x) => x.video);
+    const { generateWAMessageFromContent, prepareWAMessageMedia } = require('@whiskeysockets/baileys');
+    const albumMsg = generateWAMessageFromContent(from, {
+      albumMessage: {
+        expectedImageCount: bufs.length,
+        expectedVideoCount: 0,
+      },
+    }, { userJid: sock.user?.id });
+    await sock.relayMessage(from, albumMsg.message, { messageId: albumMsg.key.id });
 
-    if (imageItems.length >= 1 && videoItems.length === 0) {
-      const albumContent = generateWAMessageFromContent(from, {
-        albumMessage: {
-          expectedImageCount: imageItems.length,
-          expectedVideoCount: 0,
+    for (let i = 0; i < bufs.length; i++) {
+      const media = await prepareWAMessageMedia(
+        { image: bufs[i] },
+        { upload: sock.waUploadToServer }
+      );
+      const img = media.imageMessage;
+      if (i === 0 && cap) img.caption = cap;
+      img.contextInfo = {
+        ...(img.contextInfo || {}),
+        messageAssociation: {
+          associationType: 1,
+          parentMessageKey: albumMsg.key,
         },
-      }, {});
-      await sock.relayMessage(from, albumContent.message, { messageId: albumContent.key.id });
-
-      for (let i = 0; i < imageItems.length; i++) {
-        const buf = imageItems[i].image || imageItems[i];
-        const media = await prepareWAMessageMedia({ image: buf }, { upload: sock.waUploadToServer });
-        const imgNode = media.imageMessage;
-        if (i === 0 && cap) imgNode.caption = cap;
-        imgNode.contextInfo = {
-          ...(imgNode.contextInfo || {}),
-          messageAssociation: {
-            associationType: 1,
-            parentMessageKey: albumContent.key,
-          },
-        };
-        const msg = generateWAMessageFromContent(from, { imageMessage: imgNode }, {});
-        await sock.relayMessage(from, msg.message, { messageId: msg.key.id });
-        await U.sleep(200);
-      }
-      return true;
+      };
+      const node = generateWAMessageFromContent(from, { imageMessage: img }, { userJid: sock.user?.id });
+      await sock.relayMessage(from, node.message, { messageId: node.key.id });
     }
-
-    // Videos: intentar prop album
-    if (videoItems.length) {
-      await sock.sendMessage(from, {
-        album: videoItems.map((it, i) => ({
-          video: it.video,
-          ...(i === 0 && cap ? { caption: cap } : {}),
-        })),
-      }, { quoted });
-      return true;
-    }
+    return true;
   } catch (e) {
-    console.error('album nativo:', e?.message || e);
+    console.error('album native:', e && e.message ? e.message : e);
   }
 
-  // 2) Prop album directo
+  // 2) API album (algunas builds de Baileys)
   try {
     await sock.sendMessage(from, {
-      album: items.map((it, i) => {
-        if (it.video) return { video: it.video, ...(i === 0 && cap ? { caption: cap } : {}) };
-        return { image: it.image || it, ...(i === 0 && cap ? { caption: cap } : {}) };
-      }),
+      album: bufs.map((b, i) => (i === 0 ? { image: b, caption: cap } : { image: b })),
     }, { quoted });
     return true;
   } catch (e) {
-    console.error('album prop:', e?.message || e);
+    console.error('album api:', e && e.message ? e.message : e);
   }
 
-  // 3) Collage = UNA sola imagen con todas (no spam)
+  // 3) Envio en rafaga (mismo quoted) — ultimo recurso para no perder imagenes
   try {
-    const bufs = items.map((it) => it.image || it.video || it).filter((b) => Buffer.isBuffer(b));
-    if (!bufs.length) return false;
-    // Si hay videos, manda solo el primero con caption (no 4 sueltos)
-    if (items.some((x) => x.video)) {
-      await sock.sendMessage(from, { video: items[0].video, caption: cap, mimetype: 'video/mp4' }, { quoted });
-      return true;
+    await sock.sendMessage(from, { image: bufs[0], caption: cap }, { quoted });
+    for (let i = 1; i < bufs.length; i++) {
+      await sock.sendMessage(from, { image: bufs[i] }, { quoted });
     }
-    const collage = await makeCollage(bufs);
-    await sock.sendMessage(from, { image: collage, caption: cap }, { quoted });
     return true;
   } catch (e) {
-    console.error('collage:', e?.message || e);
-    return false;
+    console.error('album burst:', e && e.message ? e.message : e);
   }
+  return false;
 }
+
 
 async function imagesFlow(ctx, source) {
   const link = getLink(ctx);
