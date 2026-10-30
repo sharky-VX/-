@@ -476,14 +476,24 @@ const ELLEN_BYE = [
 ];
 
 async function profilePicBuf(sock, jid) {
-  try {
-    const url = await sock.profilePictureUrl(jid, 'image');
-    if (!url) return null;
-    const U = require('./utils');
-    return await U.getBuffer(url, { timeout: 12000 });
-  } catch {
-    return null;
+  const U = require('./utils');
+  const candidates = [];
+  const raw = String(jid || '');
+  candidates.push(raw);
+  if (raw.includes('@')) {
+    const num = raw.split('@')[0].split(':')[0];
+    candidates.push(num + '@s.whatsapp.net');
+    candidates.push(num + '@lid');
   }
+  for (const j of candidates) {
+    try {
+      const url = await sock.profilePictureUrl(j, 'image');
+      if (!url) continue;
+      const buf = await U.getBuffer(url, { timeout: 15000 });
+      if (buf && buf.length > 500) return buf;
+    } catch {}
+  }
+  return null;
 }
 
 async function sendWelcomeCard(sock, id, jid, md, chat) {
