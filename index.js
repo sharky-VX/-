@@ -120,7 +120,7 @@ async function start() {
       version,
       logger,
       auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
-      browser: Browsers.ubuntu('Chrome'),
+      browser: Browsers.macOS('Chrome'), // pairing code: WhatsApp valida mejor macOS/Chrome
       markOnlineOnConnect: false,
       syncFullHistory: false,
       generateHighQualityLinkPreview: false,
@@ -135,70 +135,52 @@ async function start() {
     if (pairNumber) {
       let pairAsked = false;
       const FIXED_CODE = 'SHARKNEX';
-      const FIXED_SHOW = 'SHAR-KNEX';
-      const askPair = async () => {
+      const askPair = async (reason) => {
         if (pairAsked || me.authState?.creds?.registered) return;
         pairAsked = true;
+        const phone = String(pairNumber).replace(/\D/g, '');
+        console.log('[PAIR]', reason || 'ready', '| num', phone);
         try {
-          const phone = String(pairNumber).replace(/\D/g, '');
-          let code = null;
-          let lastErr = null;
-          // Forzar codigo fijo SHARKNEX (varios intentos)
-          for (let i = 0; i < 5; i++) {
-            try {
-              code = await me.requestPairingCode(phone, FIXED_CODE);
-              code = String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-              // Si WhatsApp devolvio otro, insistir con el fijo en la UI y en el request
-              if (code && code !== FIXED_CODE) {
-                console.log('[PAIR] servidor devolvio', code, '- reintentando fijo', FIXED_CODE);
-                try {
-                  code = await me.requestPairingCode(phone, FIXED_CODE);
-                  code = String(code || FIXED_CODE).toUpperCase().replace(/[^A-Z0-9]/g, '');
-                } catch (e2) {
-                  lastErr = e2;
-                }
-              }
-              if (code === FIXED_CODE || !code) {
-                code = FIXED_CODE;
-                break;
-              }
-              // algunos builds devuelven el custom en minusculas o con guion
-              if (String(code).replace(/-/g, '') === FIXED_CODE) {
-                code = FIXED_CODE;
-                break;
-              }
-              // seguir intentando fijo
-              await new Promise((r) => setTimeout(r, 1500));
-            } catch (e) {
-              lastErr = e;
-              console.log('[PAIR] intento', i + 1, e?.message || e);
-              await new Promise((r) => setTimeout(r, 1500));
-            }
+          // Pedir FIJO; WhatsApp debe devolver el mismo si lo acepta
+          let code = await me.requestPairingCode(phone, FIXED_CODE);
+          code = String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+          if (code.length !== 8) {
+            // reintento sin custom
+            code = await me.requestPairingCode(phone);
+            code = String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
           }
-          // Siempre mostrar y registrar el fijo que pedimos
-          code = FIXED_CODE;
+          const shown = code.slice(0, 4) + '-' + code.slice(4);
           try { adminApi.setPairingCode(code, phone); } catch {}
           console.log('\n========================================');
-          console.log('  CODIGO FIJO:  ' + FIXED_SHOW);
-          console.log('  (SHARKNEX)');
+          console.log('  CODIGO REAL DE WHATSAPP');
+          console.log('  >>>  ' + shown + '  <<<');
+          if (code === FIXED_CODE) {
+            console.log('  (acepto el fijo SHARKNEX / SHAR-KNEX)');
+          } else {
+            console.log('  WhatsApp NO uso el fijo; usa el de arriba');
+          }
           console.log('========================================');
+          console.log('Telefono +' + phone);
           console.log('WhatsApp → Dispositivos vinculados');
-          console.log('→ Vincular con numero de telefono');
-          console.log('→ Escribe exactamente: ' + FIXED_SHOW);
-          console.log('Numero: +' + phone + '\n');
-          if (lastErr) console.log('[PAIR] aviso:', lastErr?.message || lastErr);
+          console.log('→ Vincular con NUMERO de telefono');
+          console.log('→ Escribe exactamente: ' + shown);
+          console.log('   (tambien prueba sin guion: ' + code + ')');
+          console.log('Caduca ~2 min. Si falla: rm -rf session && reinicia\n');
         } catch (e) {
           pairAsked = false;
-          console.log('❌ No se pudo pedir el codigo:', e?.message || e);
-          console.log('Usa de todos modos: SHAR-KNEX');
+          console.log('❌ requestPairingCode:', e?.message || e);
+          console.log('Borra session y reintenta en 30s.');
         }
       };
-      setTimeout(() => { askPair().catch(() => {}); }, 4000);
+      // SOLO cuando WhatsApp manda qr/connecting (si pides antes = codigo muerto)
       me.ev.on('connection.update', (u) => {
-        if (!pairAsked && (u.qr || u.connection === 'connecting')) {
-          setTimeout(() => { askPair().catch(() => {}); }, 1500);
+        if (pairAsked) return;
+        if (u.qr || u.connection === 'connecting') {
+          setTimeout(() => { askPair(u.qr ? 'qr' : 'connecting').catch(() => {}); }, 3000);
         }
       });
+      // respaldo por si no llega evento
+      setTimeout(() => { askPair('timeout').catch(() => {}); }, 12000);
     }
 
     me.ev.on('creds.update', saveCreds);

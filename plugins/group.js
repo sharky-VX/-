@@ -329,18 +329,44 @@ module.exports = [
   mk('welcome', 'Mensaje de bienvenida', 'on|off', { admin: true }, (c) => onoff(c, 'Bienvenida', 'welcome'), ['bienvenida']),
   mk('bye', 'Mensaje de despedida', 'on|off', { admin: true }, (c) => onoff(c, '👋 Despedida', 'bye'), ['despedida']),
 
-  mk('setwelcome', 'Personaliza la bienvenida', '<texto con @user {group} {members}>', { admin: true }, (c) => {
-    if (!c.q) return c.reply('Ejemplo: .setwelcome Hola @user, bienvenido a {group} 🎉 (somos {members})');
-    db.chat(c.from).welcomeMsg = c.q.slice(0, 600);
+  mk('setwelcome', 'Personaliza la bienvenida', '<texto>', { admin: true }, (c) => {
+    if (!c.q) {
+      return c.reply([
+        '   ❀ 𓆩 setwelcome 𓆪 ❀',
+        'Variables:',
+        '  @user ── menciona al usuario',
+        '  {group} ── nombre del grupo',
+        '  {members} ── cantidad de miembros',
+        '  {desc} ── descripcion del grupo',
+        '',
+        'Ejemplo:',
+        c.prefix + 'setwelcome Hola @user, bienvenido a {group}. Somos {members}.',
+        '',
+        'Activa con: ' + c.prefix + 'welcome on',
+        '   ❀',
+      ].join('\n'));
+    }
+    db.chat(c.from).welcomeMsg = c.q.slice(0, 800);
     db.save();
-    c.reply('✅ Bienvenida guardada. Actívala con .welcome on');
+    c.reply('Bienvenida guardada.\nActivala con ' + c.prefix + 'welcome on');
   }),
 
-  mk('setbye', 'Personaliza la despedida', '<texto con @user {group}>', { admin: true }, (c) => {
-    if (!c.q) return c.reply('Ejemplo: .setbye Adiós @user 👋');
-    db.chat(c.from).byeMsg = c.q.slice(0, 600);
+  mk('setbye', 'Personaliza la despedida', '<texto>', { admin: true }, (c) => {
+    if (!c.q) {
+      return c.reply([
+        '   ❀ 𓆩 setbye 𓆪 ❀',
+        'Variables: @user  {group}  {members}',
+        '',
+        'Ejemplo:',
+        c.prefix + 'setbye Adios @user, te esperamos en {group}.',
+        '',
+        'Activa con: ' + c.prefix + 'bye on',
+        '   ❀',
+      ].join('\n'));
+    }
+    db.chat(c.from).byeMsg = c.q.slice(0, 800);
     db.save();
-    c.reply('✅ Despedida guardada. Actívala con .bye on');
+    c.reply('Despedida guardada.\nActivala con ' + c.prefix + 'bye on');
   }),
 
   mk('warn', 'Da una advertencia (3 = expulsión)', '@usuario [razón]', { admin: true }, async (c) => {

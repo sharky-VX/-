@@ -18,21 +18,22 @@ module.exports = [
     if (!c.isOwner && /^\d{8,13}$/.test(c.senderNum) && n !== c.senderNum) return c.reply('Solo puedes vincular tu propio numero.');
     if (!/^\d{8,15}$/.test(n)) return c.reply('Escribe tu numero con codigo de pais, sin + ni espacios.\nEjemplo: ' + c.prefix + 'code 584121234567');
     const dest = c.from;
-    await c.reply('Pidiendo codigo FIJO *SHAR-KNEX* para +' + n + '...');
+    await c.reply('Pidiendo codigo para +' + n + '... (intento SHAR-KNEX)');
     const notify = (txt) => c.sock.sendMessage(dest, { text: decor.wrap(txt, 'code') });
+    let code = 'SHAR-KNEX';
     try {
-      await subbots.create(n, notify);
+      code = await subbots.create(n, notify);
     } catch (e) {
       return c.sock.sendMessage(dest, { text: decor.wrap('No se pudo crear el sub bot: ' + String(e && e.message ? e.message : e).slice(0, 200), 'code') });
     }
-    const shown = 'SHAR-KNEX';
+    const shown = String(code || 'SHAR-KNEX');
     await c.sock.sendMessage(dest, {
       text: decor.wrap(
-        'Codigo FIJO para +' + n + ':\n\n*' + shown + '*\n\n' +
+        'Codigo para +' + n + ':\n\n*' + shown + '*\n\n' +
         '1. WhatsApp en ESE numero\n' +
         '2. Dispositivos vinculados\n' +
         '3. Vincular con el numero de telefono\n' +
-        '4. Escribe exactamente: SHAR-KNEX\n\n' +
+        '4. Escribe el codigo de arriba TAL CUAL\n\n' +
         'Cuando conecte te aviso.',
         'code'
       ),

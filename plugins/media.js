@@ -1,3 +1,4 @@
+const { wrap, sans } = require('../lib/deco');
 const media = require('../lib/media');
 const U = require('../lib/utils');
 
@@ -20,7 +21,82 @@ const list = [
     await c.react('✅');
   }, ['s', 'stiker']),
 
-  mk('toimg', 'Sticker → imagen', '<sticker>', async (c) => {
+  
+
+  mk('ver', 'Revela foto/video de un solo uso (responde al mensaje)', '', async (c) => {
+    await c.react('👁');
+    const f = await c.getMedia(['image', 'video']);
+    if (!f) {
+      return c.reply(wrap(
+        'Responde a una *foto o video de un solo uso* (o media normal) con:\n' +
+        c.prefix + 'ver',
+        'ver'
+      ));
+    }
+    await c.react('⏳');
+    try {
+      if (f.type === 'video') {
+        await c.sock.sendMessage(c.from, {
+          video: f.buffer,
+          caption: wrap('Revelado · view once', 'ver'),
+          mimetype: f.mimetype || 'video/mp4',
+        }, { quoted: c.m });
+      } else {
+        await c.sock.sendMessage(c.from, {
+          image: f.buffer,
+          caption: wrap('Revelado · view once', 'ver'),
+        }, { quoted: c.m });
+      }
+      await c.react('✅');
+    } catch (e) {
+      console.error('ver:', e && e.message ? e.message : e);
+      return c.reply(wrap('No pude revelar ese archivo. Puede haber expirado.', 'ver'));
+    }
+  }, ['reveal', 'abrir', 'viewonce', 'antiviewonce', 'readviewonce', 'rvo']),
+
+  mk('spack', 'Pack de stickers (paquete) de lo que pidas', '<busqueda>', async (c) => {
+    const q = (c.args || []).join(' ').trim();
+    if (!q) return c.reply(wrap('Dime de que quieres el pack.\nEjemplo: ' + c.prefix + 'spack ellen joe', 'spack'));
+    await c.react('🔎');
+    const social = require('../lib/social');
+    const mediaLib = require('../lib/media');
+    const config = require('../config');
+    let imgs = [];
+    try { imgs = await social.imageSearch(q, 8); } catch (e) {
+      console.error('spack search:', e && e.message ? e.message : e);
+    }
+    if (!imgs || !imgs.length) return c.reply(wrap('No encontre imagenes para: ' + q, 'spack'));
+
+    const packName = (config.botName || 'SHARKNEX') + ' · ' + q.slice(0, 24);
+    const author = config.ownerName || 'Sharky';
+
+    await c.sock.sendMessage(c.from, {
+      text: wrap(
+        '📦 Pack de stickers\n\n  ✦ Tema     ── ' + q +
+        '\n  ✦ Stickers ── ' + imgs.length +
+        '\n  ✦ Pack     ── ' + packName,
+        'spack'
+      ),
+    }, { quoted: c.m });
+
+    await c.react('⏳');
+    let ok = 0;
+    for (let i = 0; i < imgs.length; i++) {
+      try {
+        let stick = await mediaLib.toSticker(imgs[i], false);
+        if (mediaLib.withPackMeta) stick = await mediaLib.withPackMeta(stick, packName, author);
+        await c.sock.sendMessage(c.from, { sticker: stick }, { quoted: c.m });
+        ok++;
+      } catch (e) {
+        console.error('spack sticker', i, e && e.message ? e.message : e);
+      }
+    }
+    if (!ok) return c.reply(wrap('No pude crear el pack. Revisa ffmpeg.', 'spack'));
+    await c.react('✅');
+  }, ['pack', 'stickerpack', 'stickers']),
+
+
+mk('toimg', 'Sticker → imagen', '<sticker>', async (c) => {
     const f = await need(c, ['sticker'], 'Responde a un sticker.');
     if (!f) return;
     await c.sendImage(await media.toImage(f.buffer), '🖼️');

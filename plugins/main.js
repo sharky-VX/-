@@ -383,13 +383,19 @@ const list = [
     category: 'main',
     desc: 'Velocidad real del bot (latencia medida)',
     run: async ({ sock, m, from }) => {
+      const config = require('../config');
+      const { sans: _sans } = require('../lib/deco');
+      const name = '> 𓆩 ' + _sans(config.botName || config.menuName || 'SHARKNEX') + '𝕏𓆪';
+      // RTT real: tiempo de envio a WhatsApp (no timestamp del mensaje = a veces 0)
       const t0 = process.hrtime.bigint();
-      const sent = await sock.sendMessage(from, { text: 'Midiendo...' }, { quoted: m });
-      const rtt = Number(process.hrtime.bigint() - t0) / 1e6;
-      const text =
-        `❀ *Pong*
-> ⴵ ${rtt.toFixed(0)} ms`;
-      await sock.sendMessage(from, { text, edit: sent.key });
+      const sent = await sock.sendMessage(from, { text: name }, { quoted: m });
+      const rtt = Math.max(1, Math.round(Number(process.hrtime.bigint() - t0) / 1e6));
+      await sock.sendMessage(from, {
+        text: '❀ *Pong*\n> ⴵ ' + rtt + ' ms',
+        edit: sent.key,
+      }).catch(async () => {
+        await sock.sendMessage(from, { text: '❀ *Pong*\n> ⴵ ' + rtt + ' ms' }, { quoted: m });
+      });
     },
   },
 

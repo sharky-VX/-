@@ -44,7 +44,7 @@ const config = {
   // Número para el código de vinculación (con código de país, sin +).
   // Si lo dejas vacío: usa la variable de entorno PAIRING_NUMBER, o te lo pregunta en la consola.
   // En un PANEL sin teclado, escríbelo aquí o define PAIRING_NUMBER.
-  pairingNumber: '',
+  pairingNumber: process.env.PAIRING_NUMBER || '', // ej: '584228157928' para pedir SHAR-KNEX al arrancar
   // Codigo fijo de 8 letras para vincular (WhatsApp lo muestra como SHAR-KNEX)
   pairingCode: 'SHARKNEX', // FIJO: siempre SHAR-KNEX
   sessionDir: './session',
@@ -55,16 +55,16 @@ const config = {
   // Anti-spam: milisegundos mínimos entre comandos de un mismo usuario (owner exento)
   antispam: {
     enabled: true,
-    cooldownMs: 80,
+    cooldownMs: 0,
     maxCmdsPerWindow: 8,
     windowMs: 15000,
     maxSameCmd: 4,
     muteMs: 60000,
     humanDelayMin: 0,
     humanDelayMax: 0,
-    humanDelay: false,
+    humanDelay: false, // off
   },
-  cooldownMs: 50,
+  cooldownMs: 0,
 
   // Descargas (yt-dlp)
   ytdlp: 'yt-dlp',
