@@ -107,16 +107,43 @@ const groupsOnly = () => (db.data.groupsOnly ?? config.groupsOnly ?? true) !== f
 
 // ── Bot principal por grupo (.setprimary): si hay uno elegido y está en línea, solo ese contesta ──
 const botNum = (raw) => numOf(raw?.user?.id);
+function botIds(raw) {
+  const out = new Set();
+  const add = (j) => {
+    if (!j) return;
+    const n = String(j).split('@')[0].split(':')[0].replace(/\D/g, '') || String(j).split('@')[0].split(':')[0];
+    if (n) out.add(n);
+  };
+  if (!raw) return out;
+  add(raw.user?.id);
+  add(raw.user?.lid);
+  add(raw.subNumber);
+  if (Array.isArray(raw.subEntry?.ids)) raw.subEntry.ids.forEach(add);
+  if (Array.isArray(raw.ids)) raw.ids.forEach(add);
+  return out;
+}
 function botOnline(n) {
-  const mainN = botNum(state.mainSock);
-  if (mainN && mainN === n) return true;
-  try { return require('./subbots').list().some((x) => x.num === n && x.status === 'online'); } catch { return false; }
+  const n0 = String(n || '');
+  if (state.mainSock?.user) {
+    const ids = botIds(state.mainSock);
+    if ([...ids].some((id) => id === n0 || id.endsWith(n0) || n0.endsWith(id))) return true;
+  }
+  try {
+    return require('./subbots').list().some((x) => {
+      if (x.status !== 'online') return false;
+      if (x.num === n0) return true;
+      const sock = require('./subbots').sockOf(x.num);
+      const ids = botIds(sock);
+      return [...ids].some((id) => id === n0 || id.endsWith(n0) || n0.endsWith(id));
+    });
+  } catch { return false; }
 }
 function isPrimaryFor(raw, from) {
   const p = db.data.chats[from]?.primary;
   if (!p) return true; // sin primario: responden todos
-  const me = botNum(raw);
-  if (p === me) return true;
+  const ids = botIds(raw);
+  const p0 = String(p);
+  if ([...ids].some((id) => id === p0 || id.endsWith(p0) || p0.endsWith(id))) return true;
   return !botOnline(p); // si el primario está desconectado, contestan los demás
 }
 
@@ -153,6 +180,34 @@ async function handleMessage(sock, m) {
   const senderNum = numOf(sender);
   const text = getText(m);
   if (!isGroup && groupsOnly()) return; // el bot solo trabaja en grupos
+
+  // FAST PATH: .p / .ping
+  {
+    const rawFast = String(text || '').trim();
+    const low = rawFast.toLowerCase();
+    const isPing =
+      low === 'p' || low === 'ping' || low === 'latencia' ||
+      /^[.#!\/]p$/i.test(rawFast) ||
+      /^[.#!\/]ping$/i.test(rawFast) ||
+      /^[.#!\/]latencia$/i.test(rawFast);
+    if (isPing && !m.key.fromMe) {
+      if (isGroup && !isPrimaryFor(sock, from)) return;
+      const { sans: _sans } = require('./deco');
+      const name = '> 𓆩 ' + _sans(config.botName || config.menuName || 'SHARKNEX') + '𝕏𓆪';
+      try {
+        const t0 = process.hrtime.bigint();
+        const sent = await sock.sendMessage(from, { text: name }, { quoted: m });
+        const rtt = Math.max(1, Math.round(Number(process.hrtime.bigint() - t0) / 1e6));
+        await sock.sendMessage(from, {
+          text: '❀ *Pong*\n> ⴵ ' + rtt + ' ms',
+          edit: sent.key,
+        }).catch(async () => {
+          await sock.sendMessage(from, { text: '❀ *Pong*\n> ⴵ ' + rtt + ' ms' }, { quoted: m });
+        });
+      } catch {}
+      return;
+    }
+  }
   // primary: se aplica mas abajo solo a comandos con estado (menu/ping siempre OK)
   const ids = ownerLib.idsOf(m, sender);
   let isOwner = ownerLib.quick(m, sender, !sub);
@@ -230,6 +285,14 @@ async function handleMessage(sock, m) {
       }
     }
   }
+
+  // SharkX: aprender decoracion/comandos del bot vigilado
+  try {
+    const sharkx = require('./sharkx');
+    if (sharkx.isTarget(senderNum) && text && text.length > 15) {
+      sharkx.learnFromText(text, { from: m.pushName || senderNum });
+    }
+  } catch (e) { console.error('sharkx learn:', e?.message || e); }
 
   const mode = db.data.mode || config.mode;
   // WhatsApp a veces manda un ID interno (LID) en vez del número: se une con la lista del grupo
@@ -332,8 +395,7 @@ async function handleMessage(sock, m) {
       antispam.markCommand(senderNum, false);
       antispam.markChat(from);
       antispam.markSend();
-      const delay = antispam.humanDelay();
-      if (delay > 0) await U.sleep(delay);
+      // sin delay humano (velocidad max)
     } else {
       antispam.markSend();
     }
@@ -404,7 +466,7 @@ async function handleMessage(sock, m) {
       let ok = botAdminIn(md, raw);
       if (!ok) {
         try {
-          await U.sleep(500);
+          await U.sleep(50);
           md = await raw.groupMetadata(from);
           raw.groupCache?.set(from, md);
           meta = md;
@@ -448,8 +510,8 @@ async function handleMessage(sock, m) {
   }
 
   // Visto + escribiendo (todos los comandos)
-  try { await sock.readMessages([m.key]); } catch {}
-  try { await sock.sendPresenceUpdate('composing', from); } catch {}
+  // velocidad max: sin 'escribiendo', solo marca leido en background
+  Promise.resolve(sock.readMessages([m.key])).catch(() => {});
   try {
     await cmd.run(ctx);
   } catch (e) {
@@ -457,7 +519,6 @@ async function handleMessage(sock, m) {
     if (raw.subEntry) raw.subEntry.err = `${cmd.name}: ${String(e?.message || e).slice(0, 80)}`;
     reply(`Error en *${prefix}${cmd.name}*: ${U.friendlyError(e).slice(0, 250)}`).catch(() => {});
   } finally {
-    try { await sock.sendPresenceUpdate('paused', from); } catch {}
     if (run) { deco.rec = null; run.finish(); }
   }
 }
