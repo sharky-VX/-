@@ -35,20 +35,132 @@ async function sendCard(ctx, thumb, caption) {
   return ctx.reply(caption);
 }
 
-// Envía un archivo local (yt-dlp) o una URL directa
-async function sendFileOrUrl(ctx, src, audio, title) {
+function safeMusicName(title, artist) {
+  const base = [title, artist].filter(Boolean).join(' - ') || 'musica';
+  return String(base)
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80) || 'musica';
+}
+
+// Música: portada + audio con nombre real (se guarda en el telefono con ese nombre, no AUD-xxxxx)
+async function toOpusPtt(mp3Buf) {
+  const fs = require('fs');
+  const path = require('path');
+  const { execFile } = require('child_process');
+  const os = require('os');
+  const inFile = path.join(os.tmpdir(), 'snx_' + Date.now() + '_in.mp3');
+  const outFile = path.join(os.tmpdir(), 'snx_' + Date.now() + '_out.ogg');
+  try {
+    fs.writeFileSync(inFile, mp3Buf);
+    await new Promise((resolve, reject) => {
+      execFile('ffmpeg', [
+        '-y', '-i', inFile,
+        '-c:a', 'libopus', '-b:a', '96k',
+        '-vn', '-f', 'ogg', outFile,
+      ], { timeout: 90000 }, (err) => (err ? reject(err) : resolve()));
+    });
+    const out = fs.readFileSync(outFile);
+    if (out && out.length > 1000) return out;
+  } catch (e) {
+    console.error('toOpusPtt:', e && e.message ? e.message : e);
+  } finally {
+    try { fs.unlinkSync(inFile); } catch {}
+    try { fs.unlinkSync(outFile); } catch {}
+  }
+  return null;
+}
+
+async function sendMusic(ctx, { file, buffer, title, artist, thumb }) {
   const { sock, from, m } = ctx;
+  const fs = require('fs');
+  const name = safeMusicName(title, artist);
+  const cap = [
+    '   ❀ 𓆩 ' + sans('musica') + ' 𓆪 ❀',
+    '',
+    '  ✦ Titulo   ── ' + (title || name),
+    artist ? ('  ✦ Artista  ── ' + artist) : '',
+    '',
+    '   ❀',
+  ].filter(Boolean).join('\n');
+
+  let audioBuf = buffer;
+  if (!audioBuf && file) {
+    try { audioBuf = fs.readFileSync(file); } catch (e) {
+      console.error('sendMusic read:', e && e.message ? e.message : e);
+    }
+  }
+  if (!audioBuf || audioBuf.length < 2000) {
+    return ctx.reply(wrap('No pude leer el audio.', 'musica'));
+  }
+
+  let thumbBuf = null;
+  if (thumb) {
+    try {
+      thumbBuf = Buffer.isBuffer(thumb)
+        ? thumb
+        : await U.getBuffer(thumb, { timeout: 12000, maxContentLength: 2 * 1024 * 1024 });
+      if (thumbBuf && thumbBuf.length < 1000) thumbBuf = null;
+    } catch { thumbBuf = null; }
+  }
+
+  // Portada + info
+  if (thumbBuf) {
+    await sock.sendMessage(from, { image: thumbBuf, caption: cap }, { quoted: m }).catch(() => {});
+  } else {
+    await ctx.reply(cap).catch(() => {});
+  }
+
+  // Solo nota de voz (opus). Si no se puede convertir, audio normal (escuchable).
+  try {
+    const opus = await toOpusPtt(audioBuf);
+    if (opus) {
+      await sock.sendMessage(from, {
+        audio: opus,
+        mimetype: 'audio/ogg; codecs=opus',
+        ptt: true,
+      }, { quoted: m });
+      return;
+    }
+  } catch (e) {
+    console.error('sendMusic ptt:', e && e.message ? e.message : e);
+  }
+
+  try {
+    await sock.sendMessage(from, {
+      audio: audioBuf,
+      mimetype: 'audio/mpeg',
+      ptt: false,
+    }, { quoted: m });
+  } catch (e) {
+    console.error('sendMusic mp3:', e && e.message ? e.message : e);
+    return ctx.reply(wrap('Fallo al enviar el audio.', 'musica'));
+  }
+}
+
+// Envía un archivo local (yt-dlp) o una URL directa
+async function sendFileOrUrl(ctx, src, audio, title, extra = {}) {
+  const { sock, from, m } = ctx;
+  if (audio) {
+    let buffer = null;
+    if (!src.file && src.url) {
+      buffer = await U.getBuffer(src.url, { timeout: 90000, maxContentLength: MAX(), headers: { 'User-Agent': 'Mozilla/5.0' } });
+    }
+    return sendMusic(ctx, {
+      file: src.file,
+      buffer,
+      title: extra.title || title || 'musica',
+      artist: extra.artist || '',
+      thumb: extra.thumb || null,
+    });
+  }
   let content;
   if (src.file) {
-    content = audio
-      ? { audio: { url: src.file }, mimetype: 'audio/mpeg', fileName: `${title || 'audio'}.mp3` }
-      : { video: { url: src.file }, mimetype: 'video/mp4', caption: `💙 ${title || ''}`.trim() };
+    content = { video: { url: src.file }, mimetype: 'video/mp4', caption: String(title || '').slice(0, 200), fileName: safeMusicName(title) + '.mp4' };
   } else {
-    // URL directa (TikTok): se descarga primero para respetar el límite de tamaño
     const buf = await U.getBuffer(src.url, { timeout: 90000, maxContentLength: MAX(), headers: { 'User-Agent': 'Mozilla/5.0' } });
-    content = audio
-      ? { audio: buf, mimetype: 'audio/mpeg', fileName: `${title || 'audio'}.mp3` }
-      : { video: buf, mimetype: 'video/mp4', caption: `💙 ${title || ''}`.trim() };
+    content = { video: buf, mimetype: 'video/mp4', caption: String(title || '').slice(0, 200) };
   }
   await sock.sendMessage(from, content, { quoted: m });
 }
@@ -75,15 +187,30 @@ async function ytFlow(ctx, { audio, height = 720, prefix = 'ytsearch', label = '
   ]);
   try {
     const v = info || {};
-    const cap = card(audio ? 'Música' : 'Video', [
-      ['🎵', 'Título', v.title],
-      ['🎤', 'Canal', v.channel],
-      ['⏱️', 'Duración', v.duration ? dur(v.duration) : ''],
-      ['👁️', 'Vistas', num(v.views)],
-      ['🔗', 'Enlace', v.url || url],
-    ], `${audio ? 'Aquí va tu canción' : 'Aquí va tu video'}, ${label} 💙`);
-    await sendCard(ctx, v.thumb, cap);
-    await sendFileOrUrl(ctx, { file: d.file }, audio, v.title);
+    if (audio) {
+      await sendMusic(ctx, {
+        file: d.file,
+        title: v.title || q || 'musica',
+        artist: v.channel || v.artist || '',
+        thumb: v.thumb || v.thumbnail || null,
+      });
+    } else {
+      const cap = [
+        '   ❀ 𓆩 ' + sans('video') + ' 𓆪 ❀',
+        '',
+        '  ✦ Titulo   ── ' + (v.title || ''),
+        v.channel ? ('  ✦ Canal    ── ' + v.channel) : '',
+        v.duration ? ('  ✦ Duracion ── ' + dur(v.duration)) : '',
+        '',
+        '   ❀',
+      ].filter(Boolean).join('\n');
+      await ctx.sock.sendMessage(ctx.from, {
+        video: { url: d.file },
+        mimetype: 'video/mp4',
+        caption: cap,
+        fileName: safeMusicName(v.title || 'video') + '.mp4',
+      }, { quoted: ctx.m });
+    }
     await ctx.react('✅');
   } finally {
     d.cleanup();
@@ -93,27 +220,28 @@ async function ytFlow(ctx, { audio, height = 720, prefix = 'ytsearch', label = '
 
 // ── Spotify: busca la canción (portada y datos) y manda el audio completo ──
 async function spotifyFlow(ctx) {
-  const link = getLink(ctx);
   let q = getQuery(ctx);
+  const link = getLink(ctx);
   if (link && /spotify\.com/i.test(link)) q = (await music.fromSpotifyLink(link)) || q;
-  if (!q) return ctx.reply(`🎧 Dime la canción o pega un enlace de Spotify.\nEjemplo: ${ctx.prefix}${ctx.command} bad bunny monaco`);
+  if (!q) return ctx.reply(wrap('Dime el nombre de la cancion.\nEjemplo: ' + ctx.prefix + 'spotify bad bunny', 'spotify'));
   await ctx.react('🔎');
-  const [t] = await music.searchTracks(q, 1);
-  if (!t) return ctx.reply('❌ No encontré esa canción.');
-  await ctx.react('⏳');
-  const [yv] = await yt.search(`${t.artist} ${t.title} audio`, 1);
-  if (!yv) return ctx.reply('❌ Encontré la canción pero no pude conseguir el audio.');
+  const t0 = await music.searchSpotify(q);
+  if (!t0) return ctx.reply(wrap('No encontre eso en Spotify.', 'spotify'));
+  const yq = (t0.artist ? t0.artist + ' ' : '') + t0.title + ' audio';
+  const [yv] = await yt.search(yq, 1);
+  if (!yv) return ctx.reply(wrap('Encontre la cancion pero no pude conseguir el audio.', 'spotify'));
   const d = await yt.download(yv.url, { audio: true });
   try {
-    const cap = card('Spotify', [
-      ['🎵', 'Título', t.title], ['🎤', 'Artista', t.artist], ['💿', 'Álbum', t.album],
-      ['📅', 'Año', t.year], ['🎼', 'Género', t.genre], ['⏱️', 'Duración', t.duration ? dur(t.duration) : ''],
-      ['🔥', 'Popularidad', t.popularity !== undefined ? t.popularity + '/100' : ''], ['🔗', 'Enlace', t.url],
-    ], `Datos de ${t.source} · audio de YouTube 💙`);
-    await sendCard(ctx, t.cover || yv.thumb, cap);
-    await sendFileOrUrl(ctx, { file: d.file }, true, `${t.artist} - ${t.title}`);
+    await sendMusic(ctx, {
+      file: d.file,
+      title: t0.title || yv.title,
+      artist: t0.artist || yv.channel || '',
+      thumb: t0.cover || yv.thumb || null,
+    });
     await ctx.react('✅');
-  } finally { d.cleanup(); }
+  } finally {
+    try { d.cleanup && d.cleanup(); } catch {}
+  }
 }
 
 async function spotifySearch(ctx) {
@@ -203,7 +331,12 @@ async function tiktokFlow(ctx, audioOnly) {
       '   ❀',
     ].filter(Boolean).join('\n');
     if (audioOnly) {
-      await ctx.sock.sendMessage(ctx.from, { audio: buf, mimetype: 'audio/mpeg' }, { quoted: ctx.m });
+      await sendMusic(ctx, {
+        buffer: buf,
+        title: (v && v.title) || 'TikTok',
+        artist: (v && (v.author || v.user)) || '',
+        thumb: (v && (v.cover || v.thumb)) || null,
+      });
     } else {
       await ctx.sock.sendMessage(ctx.from, { video: buf, caption: cap, mimetype: 'video/mp4' }, { quoted: ctx.m });
     }
@@ -246,7 +379,7 @@ async function tiktokFlow(ctx, audioOnly) {
 
   await ctx.react('⏳');
   const ok = [];
-  // Secuencial: tikwm limita 1 req/s; paralelo hace que fallen todos
+  // Secuencial: tikwm limita 1 req/s
   for (let i = 0; i < list.length && ok.length < 4; i++) {
     const v = list[i];
     let pageUrl = v.url || '';
@@ -256,20 +389,7 @@ async function tiktokFlow(ctx, audioOnly) {
       if (!got) continue;
       const buf = Buffer.isBuffer(got) ? got : got.buf;
       const meta = Buffer.isBuffer(got) ? v : Object.assign({}, v, got.meta || {});
-      ok.push({ buf: buf, meta: meta });
-      // enviar YA (mas rapido percibido)
-      const cap = [
-        '   ❀ 𓆩 ' + sans('tiktok') + ' 𓆪 ❀',
-        '',
-        '  ✦ ' + String(meta.title || 'TikTok').slice(0, 110),
-        meta.author ? ('  ✦ Autor    ── ' + meta.author) : '',
-        '  ✦ Busqueda ── ' + q,
-        '  ✦ Video    ── ' + ok.length + ' / 4',
-        '  ✦ Sin marca',
-        '',
-        '   ❀',
-      ].filter(Boolean).join('\n');
-      await ctx.sock.sendMessage(ctx.from, { video: buf, caption: cap, mimetype: 'video/mp4' }, { quoted: ctx.m });
+      ok.push({ video: buf, mimetype: 'video/mp4', meta: meta });
     } catch (e) {
       console.error('tt item:', e && e.message ? e.message : e);
     }
@@ -278,6 +398,27 @@ async function tiktokFlow(ctx, audioOnly) {
 
   if (!ok.length) {
     return ctx.reply(wrap('Encontre resultados pero no pude bajar los videos.\nPrueba: ' + ctx.prefix + 'tt <enlace de tiktok>', 'tiktok'));
+  }
+
+  const cap = [
+    '   ❀ 𓆩 ' + sans('tiktok') + ' 𓆪 ❀',
+    '',
+    '  ✦ Busqueda   ── ' + q,
+    '  ✦ Resultados ── ' + ok.length + ' videos',
+    '  ✦ Sin marca',
+    '',
+    '   ❀',
+  ].join('\n');
+
+  // Intentar album; si no, UN solo video con la info (sin regar el chat)
+  let albumOk = false;
+  try { albumOk = await sendMediaAlbum(ctx, ok, cap); } catch (e) { albumOk = false; }
+  if (!albumOk) {
+    await ctx.sock.sendMessage(ctx.from, {
+      video: ok[0].video,
+      caption: cap,
+      mimetype: 'video/mp4',
+    }, { quoted: ctx.m });
   }
   await ctx.react('✅');
 }
@@ -288,88 +429,121 @@ async function makeCollage(buffers) {
   const Jimp = require('jimp');
   const n = Math.min(buffers.length, 10);
   if (n === 1) return buffers[0];
-  const cols = n <= 4 ? 2 : n <= 9 ? 3 : 5;
+  // Grid limpio tipo album (2x2, 3x3, 2x5...)
+  const cols = n <= 4 ? 2 : n <= 6 ? 3 : n <= 9 ? 3 : 5;
   const rows = Math.ceil(n / cols);
-  const cell = 360;
-  const canvas = new Jimp(cols * cell, rows * cell, 0x0d0d0dff);
+  const cell = 480; // buena calidad
+  const gap = 6;
+  const canvas = new Jimp(cols * cell + gap * (cols + 1), rows * cell + gap * (rows + 1), 0x111111ff);
   for (let i = 0; i < n; i++) {
     try {
       const img = await Jimp.read(buffers[i]);
-      img.cover(cell - 4, cell - 4);
-      const x = (i % cols) * cell + 2;
-      const y = Math.floor(i / cols) * cell + 2;
+      img.cover(cell, cell);
+      const x = gap + (i % cols) * (cell + gap);
+      const y = gap + Math.floor(i / cols) * (cell + gap);
       canvas.composite(img, x, y);
     } catch (e) {
-      console.error('collage cell:', e?.message || e);
+      console.error('collage cell:', e && e.message ? e.message : e);
     }
   }
-  return canvas.quality(82).getBufferAsync(Jimp.MIME_JPEG);
+  return canvas.quality(92).getBufferAsync(Jimp.MIME_JPEG);
 }
 
-// Envia medias JUNTAS: album nativo → collage (NUNCA 10 mensajes sueltos)
-async function sendAlbum(ctx, items, caption) {
+// Album nativo WhatsApp: VARIAS fotos completas en UN solo bloque (grid arriba + caption)
+async function sendMediaAlbum(ctx, items, caption) {
   if (!items || !items.length) return false;
   const sock = ctx.sock;
-  const from = ctx.from;
-  const quoted = ctx.m;
+  const jid = ctx.from;
   const cap = String(caption || '');
-  const bufs = items.map((x) => x.image || x).filter((b) => b && b.length > 500);
-  if (!bufs.length) return false;
+  const { generateWAMessageFromContent, prepareWAMessageMedia } = require('@whiskeysockets/baileys');
+  const { randomBytes } = require('crypto');
+  const Jimp = require('jimp');
 
-  // 1) Album nativo Baileys (imagenes completas juntas)
+  // Normalizar a JPEG limpio (evita fallos de asociacion)
+  const medias = [];
+  for (const it of items) {
+    if (it.video && it.video.length > 2000) {
+      medias.push({ type: 'video', data: it.video, mimetype: it.mimetype || 'video/mp4' });
+      continue;
+    }
+    if (it.image && it.image.length > 500) {
+      try {
+        const img = await Jimp.read(it.image);
+        if (img.bitmap.width > 1280) img.resize(1280, Jimp.AUTO);
+        const buf = await img.quality(88).getBufferAsync(Jimp.MIME_JPEG);
+        medias.push({ type: 'image', data: buf });
+      } catch {
+        medias.push({ type: 'image', data: it.image });
+      }
+    }
+  }
+  if (!medias.length) return false;
+
+  const nImg = medias.filter((m) => m.type === 'image').length;
+  const nVid = medias.filter((m) => m.type === 'video').length;
+
   try {
-    const { generateWAMessageFromContent, prepareWAMessageMedia } = require('@whiskeysockets/baileys');
-    const albumMsg = generateWAMessageFromContent(from, {
+    // Padre album
+    const album = generateWAMessageFromContent(jid, {
       albumMessage: {
-        expectedImageCount: bufs.length,
-        expectedVideoCount: 0,
+        expectedImageCount: nImg,
+        expectedVideoCount: nVid,
       },
-    }, { userJid: sock.user?.id });
-    await sock.relayMessage(from, albumMsg.message, { messageId: albumMsg.key.id });
+    }, { userJid: sock.user.id });
 
-    for (let i = 0; i < bufs.length; i++) {
-      const media = await prepareWAMessageMedia(
-        { image: bufs[i] },
+    // Asegurar key de grupo
+    album.key = {
+      remoteJid: jid,
+      fromMe: true,
+      id: album.key.id,
+    };
+
+    await sock.relayMessage(jid, album.message, { messageId: album.key.id });
+    await U.sleep(500);
+
+    for (let i = 0; i < medias.length; i++) {
+      const m = medias[i];
+      const isVid = m.type === 'video';
+      const prepared = await prepareWAMessageMedia(
+        isVid ? { video: m.data } : { image: m.data },
         { upload: sock.waUploadToServer }
       );
-      const img = media.imageMessage;
-      if (i === 0 && cap) img.caption = cap;
-      img.contextInfo = {
-        ...(img.contextInfo || {}),
+      const field = isVid ? 'videoMessage' : 'imageMessage';
+      const body = { ...prepared[field] };
+      if (i === 0 && cap) body.caption = cap;
+      if (isVid) body.mimetype = m.mimetype || 'video/mp4';
+
+      body.contextInfo = {
         messageAssociation: {
-          associationType: 1,
-          parentMessageKey: albumMsg.key,
+          associationType: 1, // MEDIA_ALBUM
+          parentMessageKey: {
+            remoteJid: jid,
+            fromMe: true,
+            id: album.key.id,
+          },
         },
       };
-      const node = generateWAMessageFromContent(from, { imageMessage: img }, { userJid: sock.user?.id });
-      await sock.relayMessage(from, node.message, { messageId: node.key.id });
+
+      const child = generateWAMessageFromContent(jid, { [field]: body }, { userJid: sock.user.id });
+      child.key = {
+        remoteJid: jid,
+        fromMe: true,
+        id: child.key.id,
+      };
+
+      await sock.relayMessage(jid, child.message, { messageId: child.key.id });
+      // Delay para que el cliente arme el grid (como en el video: 1 foto, 2 fotos...)
+      if (i < medias.length - 1) await U.sleep(650);
     }
     return true;
   } catch (e) {
-    console.error('album native:', e && e.message ? e.message : e);
+    console.error('album fail:', e && e.message ? e.message : e);
+    return false;
   }
+}
 
-  // 2) API album (algunas builds de Baileys)
-  try {
-    await sock.sendMessage(from, {
-      album: bufs.map((b, i) => (i === 0 ? { image: b, caption: cap } : { image: b })),
-    }, { quoted });
-    return true;
-  } catch (e) {
-    console.error('album api:', e && e.message ? e.message : e);
-  }
-
-  // 3) Envio en rafaga (mismo quoted) — ultimo recurso para no perder imagenes
-  try {
-    await sock.sendMessage(from, { image: bufs[0], caption: cap }, { quoted });
-    for (let i = 1; i < bufs.length; i++) {
-      await sock.sendMessage(from, { image: bufs[i] }, { quoted });
-    }
-    return true;
-  } catch (e) {
-    console.error('album burst:', e && e.message ? e.message : e);
-  }
-  return false;
+async function sendAlbum(ctx, items, caption) {
+  return sendMediaAlbum(ctx, items, caption);
 }
 
 
@@ -390,21 +564,27 @@ async function imagesFlow(ctx, source) {
   const cap = [
     '   ❀ 𓆩 ' + sans('pinterest') + ' 𓆪 ❀',
     '',
-    '  ✦ Busqueda   ── ' + q,
-    '  ✦ Resultados ── ' + imgs.length + ' imagenes',
-    '  ✦ Modo       ── album',
+    '  ✦ Busqueda    ── ' + q,
+    '  ✦ Resultados  ── ' + imgs.length,
     '',
     '   ❀',
   ].join('\n');
 
-  const items = imgs.map(function (buf) { return { image: buf }; });
-  const ok = await sendAlbum(ctx, items, cap);
+  await ctx.react('⏳');
+  const items = imgs.map((buf) => ({ image: buf }));
+
+  // Album nativo: todas las fotos completas en UN bloque arriba
+  let ok = await sendMediaAlbum(ctx, items, cap);
   if (!ok) {
+    await U.sleep(800);
+    ok = await sendMediaAlbum(ctx, items, cap);
+  }
+  if (!ok) {
+    // Ultimo recurso: collage (1 mensaje) — nunca imagenes sueltas
     try {
       const collage = await makeCollage(imgs);
       await ctx.sock.sendMessage(ctx.from, { image: collage, caption: cap }, { quoted: ctx.m });
     } catch (e) {
-      console.error('pin fallback:', e && e.message ? e.message : e);
       return ctx.reply(wrap('No pude enviar el album.', 'pinterest'));
     }
   }

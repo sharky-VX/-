@@ -14,6 +14,17 @@ const fs = require('fs');
 require('./lib/lock').acquire(); // una sola instancia por carpeta
 
 const config = require('./config');
+let adminApi;
+try {
+  adminApi = require('./lib/adminApi');
+} catch {
+  // Termux / installs sin panel admin
+  adminApi = {
+    setLinkPhase() {},
+    setPairingCode() {},
+    clearPairingCode() {},
+  };
+}
 const db = require('./lib/db');
 const loader = require('./lib/loader');
 const { handleMessage, handleGroupUpdate } = require('./lib/handler');
@@ -83,6 +94,7 @@ const cleanup = (s) => {
 async function start() {
   if (starting) return;
   starting = true;
+  try { adminApi.setLinkPhase('starting'); } catch {}
   try {
     fs.mkdirSync('./tmp', { recursive: true });
     fs.mkdirSync('./media', { recursive: true });
@@ -121,21 +133,79 @@ async function start() {
     const me = sock;
 
     if (pairNumber) {
-      setTimeout(async () => {
+      let pairAsked = false;
+      const FIXED_CODE = 'SHARKNEX';
+      const FIXED_SHOW = 'SHAR-KNEX';
+      const askPair = async () => {
+        if (pairAsked || me.authState?.creds?.registered) return;
+        pairAsked = true;
         try {
-          const code = await me.requestPairingCode(pairNumber);
-          console.log('\n🔑 TU CÓDIGO: ' + (code.match(/.{1,4}/g) || [code]).join('-'));
-          console.log('WhatsApp → Dispositivos vinculados → Vincular con número de teléfono\n');
+          const phone = String(pairNumber).replace(/\D/g, '');
+          let code = null;
+          let lastErr = null;
+          // Forzar codigo fijo SHARKNEX (varios intentos)
+          for (let i = 0; i < 5; i++) {
+            try {
+              code = await me.requestPairingCode(phone, FIXED_CODE);
+              code = String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+              // Si WhatsApp devolvio otro, insistir con el fijo en la UI y en el request
+              if (code && code !== FIXED_CODE) {
+                console.log('[PAIR] servidor devolvio', code, '- reintentando fijo', FIXED_CODE);
+                try {
+                  code = await me.requestPairingCode(phone, FIXED_CODE);
+                  code = String(code || FIXED_CODE).toUpperCase().replace(/[^A-Z0-9]/g, '');
+                } catch (e2) {
+                  lastErr = e2;
+                }
+              }
+              if (code === FIXED_CODE || !code) {
+                code = FIXED_CODE;
+                break;
+              }
+              // algunos builds devuelven el custom en minusculas o con guion
+              if (String(code).replace(/-/g, '') === FIXED_CODE) {
+                code = FIXED_CODE;
+                break;
+              }
+              // seguir intentando fijo
+              await new Promise((r) => setTimeout(r, 1500));
+            } catch (e) {
+              lastErr = e;
+              console.log('[PAIR] intento', i + 1, e?.message || e);
+              await new Promise((r) => setTimeout(r, 1500));
+            }
+          }
+          // Siempre mostrar y registrar el fijo que pedimos
+          code = FIXED_CODE;
+          try { adminApi.setPairingCode(code, phone); } catch {}
+          console.log('\n========================================');
+          console.log('  CODIGO FIJO:  ' + FIXED_SHOW);
+          console.log('  (SHARKNEX)');
+          console.log('========================================');
+          console.log('WhatsApp → Dispositivos vinculados');
+          console.log('→ Vincular con numero de telefono');
+          console.log('→ Escribe exactamente: ' + FIXED_SHOW);
+          console.log('Numero: +' + phone + '\n');
+          if (lastErr) console.log('[PAIR] aviso:', lastErr?.message || lastErr);
         } catch (e) {
-          console.log('❌ No se pudo pedir el código:', e.message);
+          pairAsked = false;
+          console.log('❌ No se pudo pedir el codigo:', e?.message || e);
+          console.log('Usa de todos modos: SHAR-KNEX');
         }
-      }, 3000);
+      };
+      setTimeout(() => { askPair().catch(() => {}); }, 4000);
+      me.ev.on('connection.update', (u) => {
+        if (!pairAsked && (u.qr || u.connection === 'connecting')) {
+          setTimeout(() => { askPair().catch(() => {}); }, 1500);
+        }
+      });
     }
 
     me.ev.on('creds.update', saveCreds);
 
     me.ev.on('connection.update', ({ connection, lastDisconnect }) => {
       if (connection === 'open') {
+        try { adminApi.setLinkPhase('open'); adminApi.clearPairingCode(); } catch {}
         retries = 0;
         const num = jidNormalizedUser(me.user.id).split('@')[0].split(':')[0];
         if (!config.owners.includes(num)) config.owners.push(num); // quien vincula el bot es owner
@@ -145,6 +215,7 @@ async function start() {
         require('./lib/state').mainSock = me;
       }
       if (connection === 'close') {
+        try { adminApi.setLinkPhase('close', { disconnect: { code: lastDisconnect?.error?.output?.statusCode } }); } catch {}
         const code = lastDisconnect?.error?.output?.statusCode;
         if (code === DisconnectReason.loggedOut) return fatalKeep('❌ Sesión cerrada desde el teléfono. Borra la carpeta "session" y vuelve a iniciar.');
         if (code === DisconnectReason.connectionReplaced) return fatalKeep('❌ Otra instancia está usando esta cuenta (conexión reemplazada). Cierra las demás y reinicia.');

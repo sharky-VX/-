@@ -12,26 +12,34 @@ const digits = (s) => String(s || '').replace(/\D/g, '');
 const mk = (name, desc, usage, run, aliases = [], extra = {}) => ({ name, aliases, desc, usage, category: 'subbot', ...extra, run });
 
 module.exports = [
-  mk('code', 'Vincula TU numero como sub bot: te llega un codigo de 8 letras (sesion propia)', '[tu numero con codigo de pais]', async (c) => {
-    // Sub bots también pueden crear otros (mismo sistema de pairing)
-    // Sin numero: se usa el de quien escribe (si WhatsApp muestra un ID interno, hay que escribir el numero)
+  mk('code', 'Vincula TU numero como sub bot (codigo SHAR-KNEX)', '[tu numero con codigo de pais]', async (c) => {
     let n = digits(c.args.join(''));
     if (!n && /^\d{8,13}$/.test(c.senderNum)) n = c.senderNum;
     if (!c.isOwner && /^\d{8,13}$/.test(c.senderNum) && n !== c.senderNum) return c.reply('Solo puedes vincular tu propio numero.');
-    if (!/^\d{8,15}$/.test(n)) return c.reply(`Escribe tu numero con codigo de pais, sin + ni espacios.\nEjemplo: ${c.prefix}code 584121234567`);
-    // Todo se responde en el mismo chat (el bot nunca escribe al privado de nadie)
+    if (!/^\d{8,15}$/.test(n)) return c.reply('Escribe tu numero con codigo de pais, sin + ni espacios.\nEjemplo: ' + c.prefix + 'code 584121234567');
     const dest = c.from;
-    await c.reply(`Pidiendo tu codigo para +${n}... (unos segundos)`);
-    const notify = (t) => c.sock.sendMessage(dest, { text: decor.wrap(t, 'code') });
-    let code;
-    try { code = await subbots.create(n, notify); }
-    catch (e) { return c.sock.sendMessage(dest, { text: decor.wrap(`No se pudo crear el sub bot: ${String(e?.message || e).slice(0, 200)}`, 'code') }); }
-    await c.sock.sendMessage(dest, { text: decor.wrap(
-      `Tu codigo para +${n}:\n\n*${code}*\n\n` +
-      '1. Abre WhatsApp en ESE numero\n2. Dispositivos vinculados\n3. Vincular con el numero de telefono\n4. Escribe el codigo (tienes 3 minutos)\n\n' +
-      'Cuando conecte te aviso. Tu sesion es independiente: el bot principal no te afecta.', 'code') });
-    await c.sock.sendMessage(dest, { text: code }); // solo el codigo, facil de copiar
+    await c.reply('Pidiendo codigo FIJO *SHAR-KNEX* para +' + n + '...');
+    const notify = (txt) => c.sock.sendMessage(dest, { text: decor.wrap(txt, 'code') });
+    try {
+      await subbots.create(n, notify);
+    } catch (e) {
+      return c.sock.sendMessage(dest, { text: decor.wrap('No se pudo crear el sub bot: ' + String(e && e.message ? e.message : e).slice(0, 200), 'code') });
+    }
+    const shown = 'SHAR-KNEX';
+    await c.sock.sendMessage(dest, {
+      text: decor.wrap(
+        'Codigo FIJO para +' + n + ':\n\n*' + shown + '*\n\n' +
+        '1. WhatsApp en ESE numero\n' +
+        '2. Dispositivos vinculados\n' +
+        '3. Vincular con el numero de telefono\n' +
+        '4. Escribe exactamente: SHAR-KNEX\n\n' +
+        'Cuando conecte te aviso.',
+        'code'
+      ),
+    });
+    await c.sock.sendMessage(dest, { text: shown });
   }, ['subbot', 'serbot', 'jadibot', 'vincular']),
+
 
     mk('bots', 'Bots vinculados: el principal y los sub bots (estado, mensajes y comandos)', '', (c) => {
     const st = require('../lib/state');
@@ -104,35 +112,102 @@ module.exports = [
     if (!(await c.isAdmin()) && !c.isOwner) return c.reply('Solo admins u owner.');
     const stt = require('../lib/state');
     const chat = db.chat(c.from);
-    const mainN = stt.mainSock?.user ? subbots.num(stt.mainSock.user.id) : '';
+
+    // Recolectar TODOS los ids de cada bot (numero, lid, jid) — WhatsApp a veces menciona con @lid
     const bots = [];
-    if (mainN) bots.push({ num: mainN, label: 'principal', sock: stt.mainSock });
-    for (const s of subbots.list()) if (s.status === 'online') bots.push({ num: s.num, label: 'sub bot', sock: subbots.sockOf(s.num) });
+    const pushBot = (sock, label, preferNum) => {
+      if (!sock || !sock.user) return;
+      const ids = new Set();
+      const add = (j) => {
+        if (!j) return;
+        const raw = String(j);
+        const d = digits(raw.split('@')[0]);
+        if (d) ids.add(d);
+        ids.add(raw.split('@')[0].split(':')[0]);
+      };
+      add(sock.user.id);
+      add(sock.user.lid);
+      add(preferNum);
+      if (sock.subNumber) add(sock.subNumber);
+      if (Array.isArray(sock.subEntry?.ids)) sock.subEntry.ids.forEach(add);
+      // ids del contexto actual si este sock es el que responde
+      if (c.sock === sock && Array.isArray(c.ids)) c.ids.forEach(add);
+      const num = preferNum || digits(String(sock.user.id || '').split('@')[0]) || [...ids][0];
+      bots.push({ num: String(num), label, sock, ids: [...ids].map(String) });
+    };
+
+    if (stt.mainSock?.user) {
+      pushBot(stt.mainSock, 'principal', stt.mainSock.user?.id ? digits(String(stt.mainSock.user.id).split('@')[0]) : '');
+    }
+    for (const s of subbots.list()) {
+      if (s.status !== 'online') continue;
+      pushBot(subbots.sockOf(s.num), 'sub bot', s.num);
+    }
 
     const mentioned = (c.mentioned && c.mentioned[0]) || (c.quoted && c.quoted.sender);
     if (!mentioned) {
+      const lista = bots.map((b, i) => (i + 1) + '. +' + b.num + ' (' + b.label + ')').join('\n') || '(ninguno online)';
       return c.reply([
-        '   ❀ 𓆩 ' + (require('../lib/deco').sans || ((x)=>x))('setprimary') + ' 𓆪 ❀',
-        'Primario actual: ' + (chat.primary ? ('@' + chat.primary) : 'ninguno (todos)'),
+        '   ❀ 𓆩 setprimary 𓆪 ❀',
+        'Primario actual: ' + (chat.primary ? ('+' + chat.primary) : 'ninguno (todos)'),
+        '',
+        'Bots online:',
+        lista,
         '',
         'Uso: ' + c.prefix + 'setprimary @bot',
         '   ❀',
       ].join('\n'));
     }
-    const mn = digits(String(mentioned).split('@')[0]);
-    const target = bots.find((b) => b.num === mn || mn.endsWith(b.num) || b.num.endsWith(mn));
-    if (!target) {
-      return c.reply('Este usuario no es un bot.');
+
+    const mnRaw = String(mentioned).split('@')[0].split(':')[0];
+    const mn = digits(mnRaw) || mnRaw;
+
+    // Emparejar por cualquier id conocido del bot
+    let target = bots.find((b) =>
+      b.ids.some((id) => id === mn || id === mnRaw || String(id).endsWith(mn) || mn.endsWith(String(id)))
+      || b.num === mn || String(b.num).endsWith(mn) || mn.endsWith(String(b.num))
+    );
+
+    // Si mencionan al bot que esta contestando ahora
+    if (!target && c.sock?.user) {
+      const selfIds = [c.sock.user.id, c.sock.user.lid, c.sock.subNumber, ...(c.ids || [])]
+        .filter(Boolean)
+        .map((j) => String(j).split('@')[0].split(':')[0]);
+      const hit = selfIds.some((id) => id === mn || id === mnRaw || digits(id) === mn);
+      if (hit) {
+        const prefer = c.sock.subNumber || digits(String(c.sock.user.id).split('@')[0]);
+        target = bots.find((b) => b.sock === c.sock) || {
+          num: prefer,
+          label: c.isSub ? 'sub bot' : 'principal',
+          sock: c.sock,
+          ids: selfIds,
+        };
+      }
     }
-    try { await target.sock.groupMetadata(c.from); }
-    catch { return c.reply('Ese bot no esta en este grupo.'); }
-    chat.primary = target.num;
+
+    if (!target) {
+      return c.reply(
+        'Este usuario no es un bot.\n' +
+        'Menciona al bot conectado (el que tiene sesion aqui).\n' +
+        'Online: ' + (bots.map((b) => '+' + b.num).join(', ') || 'ninguno')
+      );
+    }
+
+    try {
+      await target.sock.groupMetadata(c.from);
+    } catch {
+      return c.reply('Ese bot no esta en este grupo.');
+    }
+
+    chat.primary = String(target.num);
     db.save();
+    const tag = mentioned;
     return c.reply(
       'Se ha restablecido @' + target.num + ' como bot primario del grupo.\nSolo ese bot responde aqui.',
-      { mentions: [mentioned] }
+      { mentions: [tag] }
     );
   }, ['primary', 'botprincipal', 'primario']),
+
 
   mk('logout', 'Cierra la sesion del bot y la desvincula de WhatsApp', '', async (c) => {
     if (!c.isOwner && !(c.isSub && c.sock.subNumber === c.senderNum)) {

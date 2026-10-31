@@ -81,7 +81,7 @@ const config = {
   //   o usa Google AI Studio (baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai').
   //   Funciona con cualquier servicio compatible con OpenAI (OpenRouter, DeepSeek, OpenAI...).
   ai: {
-    key: process.env.GEMINI_API_KEY || '',
+    key: process.env.AI_KEY || process.env.GEMINI_API_KEY || '',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
     model: 'gemini-2.0-flash', // revisa en tu proveedor el nombre de modelo vigente
     system: 'Eres SharkyBot, un asistente de WhatsApp. Responde en español, claro y directo, en menos de 1500 caracteres salvo que pidan más.',
@@ -95,7 +95,7 @@ const config = {
     enabled: process.env.API_ENABLED === '1',
     host: '127.0.0.1',   // '0.0.0.0' para exponerla a tu red
     port: Number(process.env.API_PORT) || 3000,
-    key: process.env.GEMINI_API_KEY || '', // <-- CAMBIA ESTA CLAVE
+    key: process.env.API_KEY || '', // variable de entorno, no en el codigo
   },
 
   // Orden y nombres de categorías en el menú
