@@ -32,9 +32,10 @@ module.exports = [
         'Codigo para +' + n + ':\n\n*' + shown + '*\n\n' +
         '1. WhatsApp en ESE numero\n' +
         '2. Dispositivos vinculados\n' +
-        '3. Vincular con el numero de telefono\n' +
-        '4. Escribe el codigo de arriba TAL CUAL\n\n' +
-        'Cuando conecte te aviso.',
+        '3. Vincular con el NUMERO de telefono\n' +
+        '4. Escribe: *' + shown + '*\n' +
+        '   (si no entra, sin guion: *' + String(shown).replace(/-/g, '') + '*)\n\n' +
+        'Tienes ~2 minutos. Cuando conecte te aviso.',
         'code'
       ),
     });

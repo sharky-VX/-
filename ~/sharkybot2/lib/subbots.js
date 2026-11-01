@@ -67,27 +67,42 @@ async function connect(e) {
 
     if (!state.creds.registered && e.pairing && !e.codeAsked) {
       e.codeAsked = true;
-      setTimeout(async () => {
-        const phone = String(e.num).replace(/\D/g, '');
-        const FIXED_CODE = 'SHARKNEX';
+      const phone = String(e.num).replace(/\D/g, '');
+      const FIXED_CODE = 'SHARKNEX';
+      let pairDone = false;
+      const askPair = async (reason) => {
+        if (pairDone || e.stopped) return;
+        pairDone = true;
+        console.log(`[SUB ${phone}] pair ready (${reason}) → pidiendo ${FIXED_CODE}`);
         try {
           let got;
           try {
             got = await sock.requestPairingCode(phone, FIXED_CODE);
           } catch (e1) {
-            console.log(`[SUB ${phone}] fijo:`, e1?.message || e1);
+            console.log(`[SUB ${phone}] fijo fallo:`, e1?.message || e1);
             got = await sock.requestPairingCode(phone);
           }
           const clean = String(got || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
           const use = clean.length === 8 ? clean : FIXED_CODE;
-          const code = use.slice(0, 4) + '-' + use.slice(4);
-          console.log(`[SUB ${phone}] CODIGO REAL: ${code}` + (use === FIXED_CODE ? ' (fijo)' : ' (WhatsApp)'));
+          // Si WhatsApp acepto SHARKNEX, mostrar SHAR-KNEX (mismo formato que el principal)
+          const code = use === FIXED_CODE ? 'SHAR-KNEX' : (use.slice(0, 4) + '-' + use.slice(4));
+          console.log(`[SUB ${phone}] CODIGO: ${code}` + (use === FIXED_CODE ? ' (fijo OK)' : ' (WhatsApp dio otro)'));
           e.resolveCode?.(code);
         } catch (err) {
+          pairDone = false;
           console.log(`[SUB ${phone}] error:`, err?.message || err);
           e.rejectCode?.(err);
         }
-      }, 5000);
+      };
+      // Igual que el principal: esperar qr/connecting (si pides antes = codigo muerto)
+      sock.ev.on('connection.update', (u) => {
+        if (pairDone) return;
+        if (u.qr || u.connection === 'connecting') {
+          setTimeout(() => { askPair(u.qr ? 'qr' : 'connecting').catch(() => {}); }, 3000);
+        }
+      });
+      // respaldo
+      setTimeout(() => { askPair('timeout').catch(() => {}); }, 12000);
     }
 
     sock.ev.on('creds.update', saveCreds);
